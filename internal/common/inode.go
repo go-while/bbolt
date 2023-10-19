@@ -1,6 +1,9 @@
 package common
 
-import "unsafe"
+import (
+	"log"
+	"unsafe"
+)
 
 // Inode represents an internal node inside of a node.
 // It can be used to point to elements in a page or point
@@ -88,11 +91,21 @@ func WriteInodeToPage(inodes Inodes, p *Page) uint32 {
 			elem.SetFlags(item.Flags())
 			elem.SetKsize(uint32(len(item.Key())))
 			elem.SetVsize(uint32(len(item.Value())))
+			if len(item.Key()) > 2 { // my debug needs to see keys > 2
+				log.Printf("WriteInodeToPage isLeaf key='%s'=%d val='%s'=%d", item.Key(), len(item.Key()), item.Value(), len(item.Value()))
+			} else {
+				log.Printf("WriteInodeToPage isLeaf buk='%s'=%d val='%#v'=%d", item.Key(), len(item.Key()), item.Value(), len(item.Value()))
+			}
 		} else {
 			elem := p.BranchPageElement(uint16(i))
 			elem.SetPos(uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem))))
 			elem.SetKsize(uint32(len(item.Key())))
 			elem.SetPgid(item.Pgid())
+			if len(item.Key()) > 2 { // my debug needs to see keys > 2
+				log.Printf("WriteInodeToPage noLeaf key='%s'=%d val='%s'=%d", item.Key(), len(item.Key()), item.Value(), len(item.Value()))
+			} else {
+				log.Printf("WriteInodeToPage noLeaf buk='%s'=%d val='%#v'=%d", item.Key(), len(item.Key()), item.Value(), len(item.Value()))
+			}
 			Assert(elem.Pgid() != p.Id(), "write: circular dependency occurred")
 		}
 
