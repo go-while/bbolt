@@ -297,8 +297,8 @@ func (n *node) splitIndex(threshold int, now int64) (index, sz uintptr) {
 		// If we have at least the minimum number of keys and adding another
 		// node would put us over the threshold then exit and return.
 		if index >= common.MinKeysPerPage && sz+elsize > uintptr(threshold) {
-			time.Sleep(time.Millisecond)
-			//log.Printf("%d splitIndex break @ index=%d n.inodes=%d n.pageElementSize=%d keyLen=%d valLen=%d elsize=%d sz=%d threshold=%d", now, index, len(n.inodes), n.pageElementSize(), len(inode.Key()), len(inode.Value()), elsize, sz, threshold)
+			//time.Sleep(time.Millisecond)
+			log.Printf("%d splitIndex break @ index=%d n.inodes=%d n.pageElementSize=%d keyLen=%d valLen=%d elsize=%d sz=%d threshold=%d", now, index, len(n.inodes), n.pageElementSize(), len(inode.Key()), len(inode.Value()), elsize, sz, threshold)
 			break
 		}
 
