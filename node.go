@@ -244,7 +244,7 @@ func (n *node) splitTwo(pageSize uintptr, now int64) (*node, *node) {
 		return n, nil
 	}
 
-	log.Printf("%d splitTwo determine pagesize='%d' (n.inodes=%d common.MinKeysPerPage=%d*2 || n.sizeLessThan=%t)", now, pageSize, len(n.inodes), common.MinKeysPerPage, n.sizeLessThan(pageSize))
+	//log.Printf("%d splitTwo determine pagesize='%d' (n.inodes=%d common.MinKeysPerPage=%d*2 || n.sizeLessThan=%t)", now, pageSize, len(n.inodes), common.MinKeysPerPage, n.sizeLessThan(pageSize))
 	// Determine the threshold before starting a new node.
 	var fillPercent = n.bucket.FillPercent
 	if fillPercent < minFillPercent {
@@ -293,11 +293,12 @@ func (n *node) splitIndex(threshold int, now int64) (index, sz uintptr) {
 		index = uintptr(i)
 		inode := n.inodes[i]
 		elsize := n.pageElementSize() + uintptr(len(inode.Key())) + uintptr(len(inode.Value()))
-		log.Printf("%d splitIndex forloop index=%d n.inodes=%d n.pageElementSize=%d keyLen=%d valLen=%d elsize=%d sz=%d", now, index, len(n.inodes), n.pageElementSize(), len(inode.Key()), len(inode.Value()), elsize, sz)
+		//log.Printf("%d splitIndex forloop index=%d n.inodes=%d n.pageElementSize=%d keyLen=%d valLen=%d elsize=%d sz=%d", now, index, len(n.inodes), n.pageElementSize(), len(inode.Key()), len(inode.Value()), elsize, sz)
 		// If we have at least the minimum number of keys and adding another
 		// node would put us over the threshold then exit and return.
 		if index >= common.MinKeysPerPage && sz+elsize > uintptr(threshold) {
-			log.Printf("%d splitIndex break @ index=%d n.inodes=%d n.pageElementSize=%d keyLen=%d valLen=%d elsize=%d sz=%d threshold=%d", now, index, len(n.inodes), n.pageElementSize(), len(inode.Key()), len(inode.Value()), elsize, sz, threshold)
+			time.Sleep(time.Millisecond)
+			//log.Printf("%d splitIndex break @ index=%d n.inodes=%d n.pageElementSize=%d keyLen=%d valLen=%d elsize=%d sz=%d threshold=%d", now, index, len(n.inodes), n.pageElementSize(), len(inode.Key()), len(inode.Value()), elsize, sz, threshold)
 			break
 		}
 
