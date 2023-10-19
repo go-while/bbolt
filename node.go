@@ -3,7 +3,10 @@ package bbolt
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"sort"
+	"time"
+	//"os"
 
 	"go.etcd.io/bbolt/internal/common"
 )
@@ -196,29 +199,35 @@ func (n *node) write(p *common.Page) {
 		return
 	}
 
-	common.WriteInodeToPage(n.inodes, p)
+	// DEBUG ONLY:
+	n.dump()
 
-	// DEBUG ONLY: n.dump()
+	common.WriteInodeToPage(n.inodes, p)
 }
 
 // split breaks up a node into multiple smaller nodes, if appropriate.
 // This should only be called from the spill() function.
 func (n *node) split(pageSize uintptr) []*node {
 	var nodes []*node
+	now := time.Now().UnixNano()
 
 	node := n
 	for {
 		// Split node into two.
-		a, b := node.splitTwo(pageSize)
+		a, b := node.splitTwo(pageSize, now)
 		nodes = append(nodes, a)
 
 		// If we can't split then exit the loop.
 		if b == nil {
 			break
 		}
-
 		// Set node to b so it gets split on the next iteration.
 		node = b
+	}
+
+	if len(nodes) > 1 {
+		//log.Printf("%d split() pagesize='%d' nodes=%d n.inodes=%d common.MinKeysPerPage=%d", time.Now().UnixNano(), pageSize, len(nodes), len(n.inodes), common.MinKeysPerPage)
+		//os.Exit(11)
 	}
 
 	return nodes
@@ -226,13 +235,16 @@ func (n *node) split(pageSize uintptr) []*node {
 
 // splitTwo breaks up a node into two smaller nodes, if appropriate.
 // This should only be called from the split() function.
-func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
+func (n *node) splitTwo(pageSize uintptr, now int64) (*node, *node) {
 	// Ignore the split if the page doesn't have at least enough nodes for
 	// two pages or if the nodes can fit in a single page.
+
 	if len(n.inodes) <= (common.MinKeysPerPage*2) || n.sizeLessThan(pageSize) {
+		//log.Printf("%d !splitTwo pagesize='%d' (n.inodes=%d <= common.MinKeysPerPage=%d*2 || n.sizeLessThan=%t)", now, pageSize, len(n.inodes), common.MinKeysPerPage, n.sizeLessThan(pageSize))
 		return n, nil
 	}
 
+	log.Printf("%d splitTwo determine pagesize='%d' (n.inodes=%d common.MinKeysPerPage=%d*2 || n.sizeLessThan=%t)", now, pageSize, len(n.inodes), common.MinKeysPerPage, n.sizeLessThan(pageSize))
 	// Determine the threshold before starting a new node.
 	var fillPercent = n.bucket.FillPercent
 	if fillPercent < minFillPercent {
@@ -243,11 +255,12 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	threshold := int(float64(pageSize) * fillPercent)
 
 	// Determine split position and sizes of the two pages.
-	splitIndex, _ := n.splitIndex(threshold)
+	splitIndex, _ := n.splitIndex(threshold, now)
 
 	// Split node into two separate nodes.
 	// If there's no parent then we'll need to create one.
 	if n.parent == nil {
+		log.Printf("%d splitTwo newParent pagesize='%d' (n.inodes=%d common.MinKeysPerPage=%d*2 || n.sizeLessThan=%t) threshold=%d splitIndex=%d", now, pageSize, len(n.inodes), common.MinKeysPerPage, n.sizeLessThan(pageSize), threshold, splitIndex)
 		n.parent = &node{bucket: n.bucket, children: []*node{n}}
 	}
 
@@ -262,24 +275,29 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	// Update the statistics.
 	n.bucket.tx.stats.IncSplit(1)
 
+	log.Printf("%d splitTwo returned@ pagesize='%d' n.inodes=%d/%d*2 threshold=%d splitIndex=%d", now, pageSize, len(n.inodes), common.MinKeysPerPage, threshold, splitIndex)
+
 	return n, next
 }
 
 // splitIndex finds the position where a page will fill a given threshold.
 // It returns the index as well as the size of the first page.
 // This is only be called from split().
-func (n *node) splitIndex(threshold int) (index, sz uintptr) {
+func (n *node) splitIndex(threshold int, now int64) (index, sz uintptr) {
 	sz = common.PageHeaderSize
+
+	//log.Printf("splitIndex threshold=%d", threshold)
 
 	// Loop until we only have the minimum number of keys required for the second page.
 	for i := 0; i < len(n.inodes)-common.MinKeysPerPage; i++ {
 		index = uintptr(i)
 		inode := n.inodes[i]
 		elsize := n.pageElementSize() + uintptr(len(inode.Key())) + uintptr(len(inode.Value()))
-
+		log.Printf("%d splitIndex forloop index=%d n.inodes=%d n.pageElementSize=%d keyLen=%d valLen=%d elsize=%d sz=%d", now, index, len(n.inodes), n.pageElementSize(), len(inode.Key()), len(inode.Value()), elsize, sz)
 		// If we have at least the minimum number of keys and adding another
 		// node would put us over the threshold then exit and return.
 		if index >= common.MinKeysPerPage && sz+elsize > uintptr(threshold) {
+			log.Printf("%d splitIndex break @ index=%d n.inodes=%d n.pageElementSize=%d keyLen=%d valLen=%d elsize=%d sz=%d threshold=%d", now, index, len(n.inodes), n.pageElementSize(), len(inode.Key()), len(inode.Value()), elsize, sz, threshold)
 			break
 		}
 
@@ -364,8 +382,12 @@ func (n *node) spill() error {
 // size is below a threshold or if there are not enough keys.
 func (n *node) rebalance() {
 	if !n.unbalanced {
+		//log.Printf("[bbolt] !rebalance node='%#v'", n)
+		//log.Printf("[bbolt] !rebalance bkt='%#v'='%s'", n.bucket, n.bucket)
 		return
 	}
+	//log.Printf("[bbolt] rebalance node='%#v'", n)
+	log.Printf("[bbolt] rebalancing bkt='%#v'='%s'", n.bucket, n.bucket)
 	n.unbalanced = false
 
 	// Update statistics.
@@ -386,7 +408,7 @@ func (n *node) rebalance() {
 			n.isLeaf = child.isLeaf
 			n.inodes = child.inodes[:]
 			n.children = child.children
-
+			log.Printf("bbolt node.go rebalance(): Move root's child up. child.isLeaf=%t child.children='%#v'", child.isLeaf, child.children)
 			// Reparent all child nodes being moved.
 			for _, inode := range n.inodes {
 				if child, ok := n.bucket.nodes[inode.Pgid()]; ok {
@@ -444,6 +466,7 @@ func (n *node) rebalance() {
 	rightNode.free()
 
 	// Either this node or the sibling node was deleted from the parent so rebalance it.
+	log.Printf("[bbolt] do rebalance parent bkt='%#v'='%s' parent='%#v'", n.bucket, n.bucket, n.parent)
 	n.parent.rebalance()
 }
 
@@ -492,38 +515,75 @@ func (n *node) dereference() {
 
 // free adds the node's underlying page to the freelist.
 func (n *node) free() {
+	log.Printf("BBOLTDB:node.go free() [NODE %d {inodes=%d}] n='%#v' EOL", n.pgid, len(n.inodes), n)
 	if n.pgid != 0 {
 		n.bucket.tx.db.freelist.free(n.bucket.tx.meta.Txid(), n.bucket.tx.page(n.pgid))
 		n.pgid = 0
 	}
 }
 
+// mod@date: 2023-10-18_12:00
+var print_header bool = false
+var printSpilled bool = true
+var printUnbalanced bool = true
+var print_isLeaf bool = false
+var print_noLeaf bool = false
+var print_item bool = false
+var print_dumped bool = false
+var debugsleep0 = 0 * time.Millisecond    // sleeps after printing: header
+var debugsleep1 = 1000 * time.Millisecond // sleeps after printing: if spilled or unbalanced
+var debugsleep2 = 0 * time.Millisecond    // sleeps if is Leaf
+var debugsleep3 = 0 * time.Millisecond    // sleeps if no Leaf
+
 // dump writes the contents of the node to STDERR for debugging purposes.
-/*
 func (n *node) dump() {
-	// Write node header.
+	// prints node header.
 	var typ = "branch"
 	if n.isLeaf {
 		typ = "leaf"
 	}
-	warnf("[NODE %d {type=%s count=%d}]", n.pgid, typ, len(n.inodes))
+	now := time.Now().UnixNano()
 
-	// Write out abbreviated version of each item.
+	if print_header {
+		log.Printf("NEW id=%d\n [NODE %d {type=%s inodes=%d}]\n n='%#v'", now, n.pgid, typ, len(n.inodes), n)
+		time.Sleep(debugsleep0)
+	}
+
+	if printSpilled && n.spilled {
+		log.Printf("!!! id=%d spil=true [NODE %d {type=%s inodes=%d}]", now, n.pgid, typ, len(n.inodes))
+		time.Sleep(debugsleep1)
+	} else if printUnbalanced && n.unbalanced {
+		log.Printf("!!! id=%d unba=true [NODE %d {type=%s inodes=%d}]", now, n.pgid, typ, len(n.inodes))
+		time.Sleep(debugsleep1)
+	}
+
 	for _, item := range n.inodes {
 		if n.isLeaf {
-			if item.flags&bucketLeafFlag != 0 {
-				bucket := (*bucket)(unsafe.Pointer(&item.value[0]))
-				warnf("+L %08x -> (bucket root=%d)", trunc(item.key, 4), bucket.root)
-			} else {
-				warnf("+L %08x -> %08x", trunc(item.key, 4), trunc(item.value, 4))
+			if print_isLeaf {
+				if print_item {
+					log.Printf("+++ id=%d write: isLeaf key='%08x' item='%#v' pgid=%d key='%s' v='%s'", now, item.Key, item, n.pgid, string(item.Key()), string(item.Value()))
+				} else {
+					log.Printf("+++ id=%d write: isLeaf pgid=%d buk=%s key='%s' v='%s'", now, n.pgid, "buk?", string(item.Key()), string(item.Value()))
+				}
+				time.Sleep(debugsleep2)
 			}
 		} else {
-			warnf("+B %08x -> pgid=%d", trunc(item.key, 4), item.pgid)
+			if print_noLeaf {
+				if print_item {
+					log.Printf("+++ id=%d write: noLeaf key='%08x' item='%#v' pgid=%d key='%s' v='%s'", now, item.Key, item, n.pgid, string(item.Key()), string(item.Value()))
+				} else {
+					log.Printf("+++ id=%d write: noLeaf pgid=%d buk=%s key='%s' v='%s'", now, n.pgid, "buk?", string(item.Key()), string(item.Value()))
+				}
+				time.Sleep(debugsleep3)
+			}
+
+			//log.Printf("+B %08x -> pgid=%d", trunc(item.key, 4), item.pgid)
 		}
 	}
-	warn("")
-}
-*/
+	if print_dumped {
+		log.Printf("END id=%d dumped", now)
+	}
+} // end func dump
 
 func compareKeys(left, right []byte) int {
 	return bytes.Compare(left, right)

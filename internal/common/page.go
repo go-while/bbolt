@@ -5,11 +5,12 @@ import (
 	"os"
 	"sort"
 	"unsafe"
+	"log"
 )
 
 const PageHeaderSize = unsafe.Sizeof(Page{})
 
-const MinKeysPerPage = 2
+const MinKeysPerPage = 2 // default 2
 
 const BranchPageElementSize = unsafe.Sizeof(branchPageElement{})
 const LeafPageElementSize = unsafe.Sizeof(leafPageElement{})
@@ -36,6 +37,7 @@ type Page struct {
 }
 
 func NewPage(id Pgid, flags, count uint16, overflow uint32) *Page {
+	log.Printf("NewPage id=%d flags=%d count=%d overflow=%d", id, flags, count, overflow)
 	return &Page{
 		id:       id,
 		flags:    flags,
