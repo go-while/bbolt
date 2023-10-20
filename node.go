@@ -200,7 +200,7 @@ func (n *node) write(p *common.Page) {
 	}
 
 	// DEBUG ONLY:
-	n.dump()
+	//n.dump()
 
 	common.WriteInodeToPage(n.inodes, p)
 }
@@ -275,7 +275,7 @@ func (n *node) splitTwo(pageSize uintptr, now int64) (*node, *node) {
 	// Update the statistics.
 	n.bucket.tx.stats.IncSplit(1)
 
-	log.Printf("%d splitTwo returned@ pagesize='%d' n.inodes=%d/%d*2 threshold=%d splitIndex=%d", now, pageSize, len(n.inodes), common.MinKeysPerPage, threshold, splitIndex)
+	//log.Printf("%d splitTwo returned@ pagesize='%d' n.inodes=%d/%d*2 threshold=%d splitIndex=%d", now, pageSize, len(n.inodes), common.MinKeysPerPage, threshold, splitIndex)
 
 	return n, next
 }
