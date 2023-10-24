@@ -1,6 +1,7 @@
 package bbolt
 
 import (
+	"log"
 	"errors"
 	"fmt"
 	"io"
@@ -134,6 +135,7 @@ type DB struct {
 
 	batchMu sync.Mutex
 	batch   *batch
+	count	*count
 
 	rwlock   sync.Mutex   // Allows only one writer at a time.
 	metalock sync.Mutex   // Protects meta page access.
@@ -923,24 +925,101 @@ func (db *DB) View(fn func(*Tx) error) error {
 // and DB.MaxBatchDelay, respectively.
 //
 // Batch is only useful when there are multiple goroutines calling it.
+const KILLER bool = false
+const BUGFIX bool = false
 func (db *DB) Batch(fn func(*Tx) error) error {
 	errCh := make(chan error, 1)
 
+	trace := time.Now().UnixNano()
+	overwrites := false
+
+	// ORIGINAL WITH DEBUGS ADDED
+	len_initial := -1
+	len_overwrites := -1
+	len_before_append := -1
+	len_after_append := -1
 	db.batchMu.Lock()
-	if (db.batch == nil) || (db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
+	if (db.batch == nil) || (!BUGFIX && db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
+
 		// There is no existing batch, or the existing batch is full; start a new one.
+		if db.batch == nil {
+			//log.Printf("%d db.batch=nil creates new", trace)
+		} else if len(db.batch.calls) > 0 {
+			len_initial = len(db.batch.calls)
+			log.Printf("%d overwrites? check batch.calls=%d", trace, len_initial)
+			overwrites = true
+		}
 		db.batch = &batch{
 			db: db,
+			date: trace,
 		}
 		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
+		//log.Printf("Launch timer db.MaxBatchDelay=%d db.batch.timer='%#v'", db.MaxBatchDelay, db.batch.timer)
+		/*
+		 * Launch timer db.MaxBatchDelay=10000000000
+		 *    db.batch.timer='&time.Timer{
+		 *       C:(<-chan time.Time)(nil),
+		 *       r:time.runtimeTimer{
+		 *           pp:0xc00002a000, when:1448181161246213, period:0,
+		 *           f:(func(interface {}, uintptr))(0x4abca0),
+		 *           arg:(func())(0x4fd420), seq:0x0, nextwhen:0,
+		 *           status:0x1
+		 *       }}'
+		 */
+		if overwrites {
+			len_overwrites = len(db.batch.calls)
+			log.Printf("%d overwrites calls? (db.batch.calls=%d) this is zero now but was (%d) before?", trace, len_overwrites, len_initial)
+			//time.Sleep(time.Second*5)
+		}
+	}
+	len_before_append = len(db.batch.calls)
+	if overwrites {
+		//log.Printf("%d overwrites before append to: db.batch.calls=%d", trace, len_before)
 	}
 	db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
+	len_after_append = len(db.batch.calls)
+	if overwrites && len_initial != len_before_append {
+		log.Printf("%d ERROR? overwrites=%t after append to: db.batch.calls len_initial=%d len_overwrites=%d before=%d after=%d", trace, overwrites, len_initial, len_overwrites, len_before_append, len_after_append)
+		if KILLER {
+			os.Exit(66)
+		}
+	}
 	if len(db.batch.calls) >= db.MaxBatchSize {
 		// wake up batch, it's ready to run
+		// DEBUG
+		//if len(db.batch.calls) > db.MaxBatchSize {
+			log.Printf("db.go: wakeup batch.calls=%d / db.MaxBatchSize=%d => trigger", len(db.batch.calls), db.MaxBatchSize)
+		//}
 		go db.batch.trigger()
+	} else {
+		//log.Printf("db.go: nowakeup batch.calls=%d / db.MaxBatchSize=%d db.MaxBatchDelay=%d", len(db.batch.calls), db.MaxBatchSize, db.MaxBatchDelay)
 	}
 	db.batchMu.Unlock()
 
+/*
+	// TESTING BUGFIX
+	if BUGFIX {
+		db.batchMu.Lock()
+		if db.batch == nil {
+			db.batch = &batch{
+				db: db,
+				date: time.Now().UnixNano(),
+			}
+			//log.Printf("%d Launch timer db.MaxBatchDelay=%d", trace, db.MaxBatchDelay)
+			db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
+		}
+		db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
+		if len(db.batch.calls) >= db.MaxBatchSize {
+			// wake up batch, it's ready to run
+			// DEBUG
+			//if len(db.batch.calls) > db.MaxBatchSize {
+			//	log.Printf("%d db.go: wakeup batch.calls=%d / db.MaxBatchSize=%d", trace, len(db.batch.calls), db.MaxBatchSize)
+			//}
+			go db.batch.trigger()
+		}
+		db.batchMu.Unlock()
+	}
+*/
 	err := <-errCh
 	if err == trySolo {
 		err = db.Update(fn)
@@ -958,30 +1037,172 @@ type batch struct {
 	timer *time.Timer
 	start sync.Once
 	calls []call
+	date  int64
+}
+
+type count struct {
+	mux sync.Mutex
+	date int64  // timestamp in milliseconds
+	next uint64
+	stop uint64
+}
+
+func (c *count) getNext(db *DB) (retval uint64) {
+	c.mux.Lock()
+	c.date = time.Now().UnixNano() / 1e6 // milliseconds
+	c.next++
+	retval = c.next
+	c.mux.Unlock()
+	return
+}
+
+func (c *count) sayStop(retval uint64, db *DB) {
+	c.mux.Lock()
+	c.stop++
+	c.mux.Unlock()
+	return
 }
 
 // trigger runs the batch if it hasn't already been run.
 func (b *batch) trigger() {
+	kill := false
+	if b == nil {
+		log.Printf("WARN trigger() b=nil")
+		kill = true
+	} else
+	if b.db == nil {
+		log.Printf("WARN trigger() b.db=nil")
+		kill = true
+	} else
+	if b.db.batch == nil {
+		log.Printf("WARN trigger() b.db.batch=nil")
+		kill = true
+	} else
+	if b.db.batch.calls == nil {
+		log.Printf("WARN trigger() b.db.batch.calls=nil")
+		kill = true
+	} else
+	if len(b.db.batch.calls) == 0 {
+		log.Printf("WARN trigger() b.db.batch.calls empty")
+		kill = true
+	}
+	log.Printf("info db.go: trigger() b.date=%d age=(%d mils) b.calls=%d", b.date, (time.Now().UnixNano()-b.date)/1e6, len(b.calls))
+	if kill && KILLER {
+		os.Exit(99)
+	}
 	b.start.Do(b.run)
 }
 
 // run performs the transactions in the batch and communicates results
 // back to DB.Batch.
 func (b *batch) run() {
+	trace := time.Now().UnixNano()
+
 	b.db.batchMu.Lock()
+	kill := 0
+	if b == nil {
+		log.Printf("%d WARN db.go: (111) run() b=nil", trace)
+		kill = 111
+		//os.Exit(kill)
+		//b.db.batchMu.Unlock()
+		//return
+	}
+	if b.db == nil {
+		log.Printf("%d WARN db.go: (112) run() b.db=nil", trace)
+		kill = 112
+		//os.Exit(kill)
+		//b.db.batchMu.Unlock()
+		//return
+	}
+	if b.db.batch == nil { // TODO DEBUG THIS
+		//log.Printf("%d WARN db.go: (113) run() b.db.batch=nil\n  --> b='%#v'\n\n", trace, b)
+		kill = 113
+		//os.Exit(kill)
+		//b.db.batchMu.Unlock()
+		//return
+	}
+	// b.timer will never be nil but the channel if the timer is not created
+	if b.timer == nil {
+		//log.Printf("%d WARN db.go: (114) run() b.timer=nil", trace)
+		//kill = true
+	} else
+	if b.timer.C == nil {
+		//b.timer.Stop()
+		//log.Printf("%d WARN db.go: (114) run() b.timer.C=nil timer...Stop() ???? ", trace)
+		// why stop if timer does not exist?
+		// the DEBUG below shows
+		// DEBUG
+		//log.Printf("%d INFO db.go: (114) run() now=%d STOP => b.timer='%#v'", trace, time.Now().UnixNano(), b.timer)
+		/*
+		 * INFO db.go: (114) run() now=1698111880888277976 STOP =>
+		 *     b.timer='&time.Timer{
+		 *          C:(<-chan time.Time)(nil),
+		 *          r:time.runtimeTimer{
+		 *              pp:0x0, when:1447783301086298, period:0,
+		 *              f:(func(interface {}, uintptr))(0x4abca0),
+		 *              arg:(func())(0x4fd600), seq:0x0, nextwhen:0,
+		 *              status:0x0
+		 *          }}'
+		 * The status field can take on different values to represent the current state of the timer. Here are some common states:
+		 *
+		 *
+		 *   0x0 (0): The timer is idle or inactive.
+		 *   0x1 (1): The timer is active and waiting to fire.
+		 *   0x2 (2): The timer has been stopped.
+		 *   0x3 (3): The timer has fired.
+		 *
+		 *
+		*/
+		//kill = 114
+		//os.Exit(kill)
+		//b.db.batchMu.Unlock()
+		//return
+	} else {
+		log.Printf("%d INFO db.go: (115y) run() now=%d STOP \n => b.timer='%#v'\n\n", trace, time.Now().UnixNano(), b.timer)
+		// stop timer only if it exists
+		//b.timer.Stop()
+		log.Printf("%d INFO db.go: (115z) run() now=%d STOP \n => b.timer='%#v'\n\n", trace, time.Now().UnixNano(), b.timer)
+		kill = 115
+		os.Exit(kill)
+		// pass
+	}
+
 	b.timer.Stop()
+
 	// Make sure no new work is added to this batch, but don't break
 	// other batches.
 	if b.db.batch == b {
+		//log.Printf("%d INFO db.go: (121a) run() b.db.batch==b\n\n  b.db.batch='%#v'\n\n  b='%#v'\n\n", trace, b.db.batch, b)
 		b.db.batch = nil
+	} else {
+		// TODO DEBUG THIS
+		log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???", trace)
+		//log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???\n\n  b.db.batch='%#v'\n\n  b='%#v'\n\n", trace, b.db.batch, b)
+		//os.Exit(121)
+		kill = 121
 	}
-	b.db.batchMu.Unlock()
 
+	b.db.batchMu.Unlock()
+	// TODO <-- this mutex should be at the end of this function?
+	//	or the comment ' and we hold the mutex anyway ' below is wrong?
+
+
+	if KILLER && kill > 0 {
+		log.Printf("%d KILL db.go: (EXIT) run() now=%d b.timer='%#v'\n", trace, time.Now().UnixNano(), b.timer)
+		os.Exit(kill)
+	}
+
+	//TESTdropERRORidx := 1
 retry:
 	for len(b.calls) > 0 {
+		//log.Printf("%d INFO db.go: (131a) len(b.calls)=%d", trace, len(b.calls))
 		var failIdx = -1
 		err := b.db.Update(func(tx *Tx) error {
 			for i, c := range b.calls {
+				//if i == TESTdropERRORidx && len(b.calls) == 3 {
+				//	failIdx = i
+				//	return fmt.Errorf("TEST failIdx")
+				//}
 				if err := safelyCall(c.fn, tx); err != nil {
 					failIdx = i
 					return err
@@ -995,6 +1216,7 @@ retry:
 			// safe to shorten b.calls here because db.batch no longer
 			// points to us, and we hold the mutex anyway.
 			c := b.calls[failIdx]
+			// copy last item of slice to slot failIdx and removes last item
 			b.calls[failIdx], b.calls = b.calls[len(b.calls)-1], b.calls[:len(b.calls)-1]
 			// tell the submitter re-run it solo, continue with the rest of the batch
 			c.err <- trySolo
