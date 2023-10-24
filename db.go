@@ -1108,7 +1108,7 @@ func (b *batch) trigger() {
 	//	log.Printf("WARN trigger() b.db.batch.calls empty")
 	//	kill = true
 	//}
-	log.Printf("info db.go: trigger() b.date=%d age=(%d mils) b.calls=%d", b.date, (time.Now().UnixNano()-b.date)/1e6, len(b.calls))
+	//log.Printf("info db.go: trigger() b.date=%d age=(%d mils) b.calls=%d", b.date, (time.Now().UnixNano()-b.date)/1e6, len(b.calls)) // WARNING: DATA RACE Read at 0x00c018bbc660 by goroutine 68193: db.go:1111 ... Previous write at 0x00c018bbc660 by goroutine 474: db.go:985
 	if kill && KILLER {
 		os.Exit(99)
 	}
