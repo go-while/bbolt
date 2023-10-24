@@ -941,10 +941,6 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 	//len_after_append := -1
 	db.batchMu.Lock()
 	if (db.batch == nil) || (db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
-
-
-
-
 		// There is no existing batch, or the existing batch is full; start a new one.
 		if db.batch == nil {
 			//log.Printf("%d db.batch=nil creates new", trace)
@@ -958,6 +954,7 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 						log.Printf("ERROR db.batch.timer.C !ok v='%#v'", v)
 					}
 				default:
+					// 2023/10/25 00:59:41 ERROR db.batch.timer.C passed default db.batch.timer='&time.Timer{C:(<-chan time.Time)(nil), r:time.runtimeTimer{pp:0xc00002ea00, when:1524283842902363, period:0, f:(func(interface {}, uintptr))(0x4abca0), arg:(func())(0x4fddc0), seq:0x0, nextwhen:0, status:0x1}}'
 					log.Printf("ERROR db.batch.timer.C passed default db.batch.timer='%#v'", db.batch.timer)
 			}
 		}
