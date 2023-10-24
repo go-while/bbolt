@@ -954,7 +954,7 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 			db.count = &count{}
 		}
 		id, _ := db.count.getNextID()
-		db.batch = &batch{
+		db.batch = &batch{ // WARNING: DATA RACE Read at 0x00c0001e0628 by goroutine 35957: db.go:1099 db.go:999 ... Previous write at 0x00c0001e0628 by goroutine 203: db.go:957
 			db: db,
 			date: trace,
 			id: id,
@@ -1095,11 +1095,11 @@ func (b *batch) trigger() {
 	if b.db == nil {
 		log.Printf("WARN trigger() b.db=nil")
 		kill = true
-	} else
-	if b.db.batch == nil {
-		log.Printf("WARN trigger() b.db.batch=nil")
-		kill = true
 	}// else
+	//if b.db.batch == nil { // WARNING: DATA RACE Read at 0x00c0001e0628 by goroutine 35957: db.go:1099 db.go:999 ... Previous write at 0x00c0001e0628 by goroutine 203: db.go:957
+	//	log.Printf("WARN trigger() b.db.batch=nil")
+	//	kill = true
+	//} else
 	//if b.db.batch.calls == nil { // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1103 db.go:999 ... Previous write at 0x00c015005420 by goroutine 343: db.go:985
 	//	log.Printf("WARN trigger() b.db.batch.calls=nil")
 	//	kill = true
