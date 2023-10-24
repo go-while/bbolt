@@ -940,7 +940,10 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 	//len_before_append := -1
 	//len_after_append := -1
 	db.batchMu.Lock()
-	if (db.batch == nil) || (!BUGFIX && db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
+	if (db.batch == nil) || (db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
+
+
+
 
 		// There is no existing batch, or the existing batch is full; start a new one.
 		if db.batch == nil {
@@ -949,6 +952,14 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 			//len_initial = len(db.batch.calls)
 			//log.Printf("%d overwrites? check batch.calls=%d", trace, len_initial)
 			overwrites = true
+			select {
+				case v, ok := <-db.batch.timer.C:
+					if !ok {
+						log.Printf("ERROR db.batch.timer.C !ok v='%#v'", v)
+					}
+				default:
+					log.Printf("ERROR db.batch.timer.C passed default db.batch.timer='%#v'", db.batch.timer)
+			}
 		}
 		if db.count == nil {
 			db.count = &count{}
@@ -1007,7 +1018,32 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 	db.batchMu.Unlock()
 
 /*
-	// TESTING BUGFIX
+	// TESTING BUGFIX1
+	if BUGFIX {
+		db.batchMu.Lock()
+		if db.batch == nil {
+			db.batch = &batch{
+				db: db,
+				date: time.Now().UnixNano(),
+			}
+			//log.Printf("%d Launch timer db.MaxBatchDelay=%d", trace, db.MaxBatchDelay)
+			db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
+		}
+		db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
+		if len(db.batch.calls) >= db.MaxBatchSize {
+			// wake up batch, it's ready to run
+			// DEBUG
+			//if len(db.batch.calls) > db.MaxBatchSize {
+			//	log.Printf("%d db.go: wakeup batch.calls=%d / db.MaxBatchSize=%d", trace, len(db.batch.calls), db.MaxBatchSize)
+			//}
+			go db.batch.trigger()
+		}
+		db.batchMu.Unlock()
+	}
+*/
+
+/*
+	// TESTING BUGFIX2 copy untouched yet
 	if BUGFIX {
 		db.batchMu.Lock()
 		if db.batch == nil {
