@@ -954,7 +954,7 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 			db.count = &count{}
 		}
 		id, running := db.count.getNextID()
-		if running >= 5 {
+		if running > 1 {
 			log.Printf("getNextID id=%d running=%d", id, running)
 		}
 		//var id uint64 // disables getNextID to test performance without
@@ -1198,8 +1198,8 @@ func (b *batch) run() {
 
 	b.timer.Stop()
 	running, lastid, stop := b.db.count.sayStop()
-	if running >= 10 {
-		log.Printf("running=%d lastid=%d stop=%d", running, lastid, stop)
+	if running > 1 {
+		log.Printf("sayStop lastid=%d stop=%d running=%d", lastid, stop, running)
 	}
 	// Make sure no new work is added to this batch, but don't break
 	// other batches.
