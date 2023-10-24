@@ -953,7 +953,10 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 		if db.count == nil {
 			db.count = &count{}
 		}
-		id, _ := db.count.getNextID()
+		id, running := db.count.getNextID()
+		if running >= 5 {
+			log.Printf("getNextID id=%d running=%d", id, running)
+		}
 		//var id uint64 // disables getNextID to test performance without
 		db.batch = &batch{ // WARNING: DATA RACE Read at 0x00c0001e0628 by goroutine 35957: db.go:1099 db.go:999 ... Previous write at 0x00c0001e0628 by goroutine 203: db.go:957
 			db: db,
@@ -1069,11 +1072,12 @@ func (c *count) GetRunning() (running uint64) {
 	return
 }
 
-func (c *count) getNextID() (id uint64, date int64) {
+func (c *count) getNextID() (id uint64, running uint64) {
 	c.mux.Lock()
 	c.date = time.Now().UnixNano() // / 1e6 // milliseconds
 	c.this++
-	id, date = c.this, c.date
+	id = c.this
+	running = c.this - c.stop
 	c.mux.Unlock()
 	return
 }
@@ -1194,7 +1198,7 @@ func (b *batch) run() {
 
 	b.timer.Stop()
 	running, lastid, stop := b.db.count.sayStop()
-	if running >= 25 {
+	if running >= 10 {
 		log.Printf("running=%d lastid=%d stop=%d", running, lastid, stop)
 	}
 	// Make sure no new work is added to this batch, but don't break
