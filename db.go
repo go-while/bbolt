@@ -1200,10 +1200,19 @@ func (b *batch) run() {
 		// TODO DEBUG THIS
 		//log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???", trace)
 		//log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???\n\n  b.db.batch='%#v'\n\n  b='%#v'\n\n", trace, b.db.batch, b)
-		log.Printf("\n\n%d !!! b.db.batch='%#v'\n\n", trace, b.db.batch)
+		fmt.Printf("\n###DEBUG START %d###\n", trace)
+		log.Printf("%d !!! b.db.batch='%#v'\n\n", trace, b.db.batch)
 		log.Printf("%d !!! b='%#v'\n\n", trace, b)
-		log.Printf("%d !!! b.db.batch.id=%d != b.id=%d ???", trace, b.db.batch.id, b.id)
-		//os.Exit(121)
+
+		if b.db.batch == nil {
+			log.Printf("%d !1! b.db.batch=nil != b.id=%d ???", trace, b.id)
+		} else if b == nil {
+			log.Printf("%d !2! b.db.batch.id=%d != b=nil ???", trace, b.db.batch.id)
+		} else {
+			log.Printf("%d !3! b.db.batch.id=%d != b.id=%d ???", trace, b.db.batch.id, b.id)
+		}
+		fmt.Printf("\n###DEBUG END %d###\n", trace)
+		os.Exit(121)
 		kill = 121
 	}
 
