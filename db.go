@@ -1219,7 +1219,7 @@ func (b *batch) run() {
 
 		/* SHORTER DEBUG */
 		if b.db.batch != nil && b != nil {
-			log.Printf("%d !9! b.db.batch.id=%d != b.id=%d ???", trace, b.db.batch.id, b.id)
+			log.Printf("%d !9! b.db.batch.id=%d != b.id=%d diff=%d ???", trace, b.db.batch.id, b.id, b.db.batch.id-b.id)
 		}
 
 		//os.Exit(121)
