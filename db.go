@@ -935,10 +935,10 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 	overwrites := false
 
 	// ORIGINAL WITH DEBUGS ADDED
-	len_initial := -1
-	len_overwrites := -1
-	len_before_append := -1
-	len_after_append := -1
+	//len_initial := -1
+	//len_overwrites := -1
+	//len_before_append := -1
+	//len_after_append := -1
 	db.batchMu.Lock()
 	if (db.batch == nil) || (!BUGFIX && db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
 
@@ -946,8 +946,8 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 		if db.batch == nil {
 			//log.Printf("%d db.batch=nil creates new", trace)
 		} else if len(db.batch.calls) > 0 {
-			len_initial = len(db.batch.calls)
-			log.Printf("%d overwrites? check batch.calls=%d", trace, len_initial)
+			//len_initial = len(db.batch.calls)
+			//log.Printf("%d overwrites? check batch.calls=%d", trace, len_initial)
 			overwrites = true
 		}
 		if db.count == nil {
@@ -973,23 +973,23 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 		 *       }}'
 		 */
 		if overwrites {
-			len_overwrites = len(db.batch.calls)
-			log.Printf("%d overwrites calls? (db.batch.calls=%d) this is zero now but was (%d) before?", trace, len_overwrites, len_initial)
+			//len_overwrites = len(db.batch.calls)
+			//log.Printf("%d overwrites calls? (db.batch.calls=%d) this is zero now but was (%d) before?", trace, len_overwrites, len_initial)
 			//time.Sleep(time.Second*5)
 		}
 	}
-	len_before_append = len(db.batch.calls)
+	//len_before_append = len(db.batch.calls)
 	if overwrites {
 		//log.Printf("%d overwrites before append to: db.batch.calls=%d", trace, len_before)
 	}
 	db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh}) // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1103 db.go:999 ... Previous write at 0x00c015005420 by goroutine 343: db.go:985
-	len_after_append = len(db.batch.calls)
-	if overwrites && len_initial != len_before_append {
-		log.Printf("%d ERROR? overwrites=%t after append to: db.batch.calls len_initial=%d len_overwrites=%d before=%d after=%d", trace, overwrites, len_initial, len_overwrites, len_before_append, len_after_append)
-		if KILLER {
-			os.Exit(66)
-		}
-	}
+	//len_after_append = len(db.batch.calls)
+	//if overwrites && len_initial != len_before_append {
+	//	//log.Printf("%d ERROR? overwrites=%t after append to: db.batch.calls len_initial=%d len_overwrites=%d before=%d after=%d", trace, overwrites, len_initial, len_overwrites, len_before_append, len_after_append)
+	//	if KILLER {
+	//		os.Exit(66)
+	//	}
+	//}
 	if len(db.batch.calls) >= db.MaxBatchSize {
 		// wake up batch, it's ready to run
 		// DEBUG
