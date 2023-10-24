@@ -1099,15 +1099,15 @@ func (b *batch) trigger() {
 	if b.db.batch == nil {
 		log.Printf("WARN trigger() b.db.batch=nil")
 		kill = true
-	} else
-	if b.db.batch.calls == nil { // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1103 db.go:999 ... Previous write at 0x00c015005420 by goroutine 343: db.go:985
-		log.Printf("WARN trigger() b.db.batch.calls=nil")
-		kill = true
-	} else
-	if len(b.db.batch.calls) == 0 { // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1107 db.go:999
-		log.Printf("WARN trigger() b.db.batch.calls empty")
-		kill = true
-	}
+	}// else
+	//if b.db.batch.calls == nil { // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1103 db.go:999 ... Previous write at 0x00c015005420 by goroutine 343: db.go:985
+	//	log.Printf("WARN trigger() b.db.batch.calls=nil")
+	//	kill = true
+	//} else
+	//if len(b.db.batch.calls) == 0 { // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1107 db.go:999
+	//	log.Printf("WARN trigger() b.db.batch.calls empty")
+	//	kill = true
+	//}
 	log.Printf("info db.go: trigger() b.date=%d age=(%d mils) b.calls=%d", b.date, (time.Now().UnixNano()-b.date)/1e6, len(b.calls))
 	if kill && KILLER {
 		os.Exit(99)
