@@ -1078,10 +1078,12 @@ func (c *count) getNextID() (id uint64, date int64) {
 	return
 }
 
-func (c *count) sayStop(retval uint64) (running uint64) {
+func (c *count) sayStop() (running, lastid, stop uint64) {
 	c.mux.Lock()
+	lastid = c.this
 	c.stop++
-	running = c.stop - c.this
+	running = c.this - c.stop
+	stop = c.stop
 	c.mux.Unlock()
 	return
 }
@@ -1191,7 +1193,10 @@ func (b *batch) run() {
 	}
 
 	b.timer.Stop()
-
+	running, lastid, stop := b.db.count.sayStop()
+	if running > 1 {
+		log.Printf("running=%d lastid=%d stop=%d", running, lastid, stop)
+	}
 	// Make sure no new work is added to this batch, but don't break
 	// other batches.
 	if b.db.batch == b {
