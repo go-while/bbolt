@@ -1194,7 +1194,7 @@ func (b *batch) run() {
 
 	b.timer.Stop()
 	running, lastid, stop := b.db.count.sayStop()
-	if running > 1 {
+	if running >= 25 {
 		log.Printf("running=%d lastid=%d stop=%d", running, lastid, stop)
 	}
 	// Make sure no new work is added to this batch, but don't break
