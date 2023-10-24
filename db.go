@@ -982,7 +982,7 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 	if overwrites {
 		//log.Printf("%d overwrites before append to: db.batch.calls=%d", trace, len_before)
 	}
-	db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
+	db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh}) // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1103 db.go:999 ... Previous write at 0x00c015005420 by goroutine 343: db.go:985
 	len_after_append = len(db.batch.calls)
 	if overwrites && len_initial != len_before_append {
 		log.Printf("%d ERROR? overwrites=%t after append to: db.batch.calls len_initial=%d len_overwrites=%d before=%d after=%d", trace, overwrites, len_initial, len_overwrites, len_before_append, len_after_append)
@@ -996,7 +996,7 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 		//if len(db.batch.calls) > db.MaxBatchSize {
 			log.Printf("db.go: wakeup batch.calls=%d / db.MaxBatchSize=%d => trigger", len(db.batch.calls), db.MaxBatchSize)
 		//}
-		go db.batch.trigger()
+		go db.batch.trigger() // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1107 db.go:999
 	} else {
 		//log.Printf("db.go: nowakeup batch.calls=%d / db.MaxBatchSize=%d db.MaxBatchDelay=%d", len(db.batch.calls), db.MaxBatchSize, db.MaxBatchDelay)
 	}
@@ -1100,11 +1100,11 @@ func (b *batch) trigger() {
 		log.Printf("WARN trigger() b.db.batch=nil")
 		kill = true
 	} else
-	if b.db.batch.calls == nil {
+	if b.db.batch.calls == nil { // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1103 db.go:999 ... Previous write at 0x00c015005420 by goroutine 343: db.go:985
 		log.Printf("WARN trigger() b.db.batch.calls=nil")
 		kill = true
 	} else
-	if len(b.db.batch.calls) == 0 {
+	if len(b.db.batch.calls) == 0 { // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1107 db.go:999
 		log.Printf("WARN trigger() b.db.batch.calls empty")
 		kill = true
 	}
