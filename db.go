@@ -950,10 +950,11 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 			//log.Printf("%d overwrites? check batch.calls=%d", trace, len_initial)
 			overwrites = true
 		}
-		if db.count == nil {
-			db.count = &count{}
-		}
-		id, _ := db.count.getNextID()
+		//if db.count == nil {
+		//	db.count = &count{}
+		//}
+		//id, _ := db.count.getNextID()
+		var id uint64 // disables getNextID to test performance without
 		db.batch = &batch{ // WARNING: DATA RACE Read at 0x00c0001e0628 by goroutine 35957: db.go:1099 db.go:999 ... Previous write at 0x00c0001e0628 by goroutine 203: db.go:957
 			db: db,
 			date: trace,
