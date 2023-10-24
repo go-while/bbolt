@@ -1221,7 +1221,7 @@ func (b *batch) run() {
 		/* SHORTER DEBUG */
 		if b.db.batch != nil && b != nil {
 			diff := b.db.batch.id-b.id
-			if diff >= 50 { // with pagesize 16K and maxbatchsize=3 i've seen diff more than 50
+			if diff >= 25 { // with pagesize 16K and maxbatchsize=3 maxbatchdelay=100ms i've seen diff more than 50
 				log.Printf("%d !9! b.db.batch.id=%d != b.id=%d diff=%d ???", trace, b.db.batch.id, b.id, diff)
 			}
 		}
