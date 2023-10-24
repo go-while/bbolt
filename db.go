@@ -1185,7 +1185,7 @@ func (b *batch) run() {
 		//b.timer.Stop()
 		log.Printf("%d INFO db.go: (115z) run() now=%d STOP \n => b.timer='%#v'\n\n", trace, time.Now().UnixNano(), b.timer)
 		kill = 115
-		os.Exit(kill)
+		os.Exit(kill) // NOTE: never seen this trigger yet?
 		// pass
 	}
 
@@ -1198,9 +1198,9 @@ func (b *batch) run() {
 		b.db.batch = nil
 	} else {
 		// TODO DEBUG THIS
-		//log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???", trace)
 		//log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???\n\n  b.db.batch='%#v'\n\n  b='%#v'\n\n", trace, b.db.batch, b)
 		fmt.Printf("\n###DEBUG START %d###\n", trace)
+		log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???", trace)
 		log.Printf("%d !!! b.db.batch='%#v'\n\n", trace, b.db.batch)
 		log.Printf("%d !!! b='%#v'\n\n", trace, b)
 
@@ -1212,7 +1212,7 @@ func (b *batch) run() {
 			log.Printf("%d !3! b.db.batch.id=%d != b.id=%d ???", trace, b.db.batch.id, b.id)
 		}
 		fmt.Printf("\n###DEBUG END %d###\n", trace)
-		os.Exit(121)
+		//os.Exit(121)
 		kill = 121
 	}
 
