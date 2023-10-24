@@ -1,7 +1,7 @@
 package bbolt
 
 import (
-	"log"
+	//"log"
 	"bytes"
 	"fmt"
 	"sort"
@@ -263,7 +263,7 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	// Update the statistics.
 	n.bucket.tx.stats.IncSplit(1)
 
-	log.Printf("splitTwo returned@ pagesize='%d' n.inodes=%d/%d*2 threshold=%d splitIndex=%d fillPercent=%f", pageSize, len(n.inodes), common.MinKeysPerPage, threshold, splitIndex, fillPercent)
+	//log.Printf("splitTwo returned@ pagesize='%d' n.inodes=%d/%d*2 threshold=%d splitIndex=%d fillPercent=%f", pageSize, len(n.inodes), common.MinKeysPerPage, threshold, splitIndex, fillPercent)
 
 	return n, next
 }
