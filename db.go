@@ -136,6 +136,7 @@ type DB struct {
 	batchMu sync.Mutex
 	batch   *batch
 	count	*count
+	timerIDs uint64
 
 	rwlock   sync.Mutex   // Allows only one writer at a time.
 	metalock sync.Mutex   // Protects meta page access.
@@ -949,9 +950,14 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 			log.Printf("%d overwrites? check batch.calls=%d", trace, len_initial)
 			overwrites = true
 		}
+		if db.count == nil {
+			db.count = &count{}
+		}
+		id, _ := db.count.getNextID()
 		db.batch = &batch{
 			db: db,
 			date: trace,
+			id: id,
 		}
 		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
 		//log.Printf("Launch timer db.MaxBatchDelay=%d db.batch.timer='%#v'", db.MaxBatchDelay, db.batch.timer)
@@ -1038,27 +1044,43 @@ type batch struct {
 	start sync.Once
 	calls []call
 	date  int64
+	id    uint64
 }
 
 type count struct {
 	mux sync.Mutex
 	date int64  // timestamp in milliseconds
-	next uint64
-	stop uint64
+	this uint64 // counts started ones
+	stop uint64 // counts stopped ones
 }
 
-func (c *count) getNext(db *DB) (retval uint64) {
+func (c *count) GetThisID() (id uint64) {
 	c.mux.Lock()
-	c.date = time.Now().UnixNano() / 1e6 // milliseconds
-	c.next++
-	retval = c.next
+	id = c.this
 	c.mux.Unlock()
 	return
 }
 
-func (c *count) sayStop(retval uint64, db *DB) {
+func (c *count) GetRunning() (running uint64) {
+	c.mux.Lock()
+	running = c.stop - c.this
+	c.mux.Unlock()
+	return
+}
+
+func (c *count) getNextID() (id uint64, date int64) {
+	c.mux.Lock()
+	c.date = time.Now().UnixNano() // / 1e6 // milliseconds
+	c.this++
+	id, date = c.this, c.date
+	c.mux.Unlock()
+	return
+}
+
+func (c *count) sayStop(retval uint64) (running uint64) {
 	c.mux.Lock()
 	c.stop++
+	running = c.stop - c.this
 	c.mux.Unlock()
 	return
 }
@@ -1176,8 +1198,11 @@ func (b *batch) run() {
 		b.db.batch = nil
 	} else {
 		// TODO DEBUG THIS
-		log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???", trace)
+		//log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???", trace)
 		//log.Printf("%d WARN db.go: (121b) run() b.db.batch != b ???\n\n  b.db.batch='%#v'\n\n  b='%#v'\n\n", trace, b.db.batch, b)
+		log.Printf("\n\n%d !!! b.db.batch='%#v'\n\n", trace, b.db.batch)
+		log.Printf("%d !!! b='%#v'\n\n", trace, b)
+		log.Printf("%d !!! b.db.batch.id=%d != b.id=%d ???", trace, b.db.batch.id, b.id)
 		//os.Exit(121)
 		kill = 121
 	}
