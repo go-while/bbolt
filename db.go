@@ -994,7 +994,7 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 		// wake up batch, it's ready to run
 		// DEBUG
 		//if len(db.batch.calls) > db.MaxBatchSize {
-			log.Printf("db.go: wakeup batch.calls=%d / db.MaxBatchSize=%d => trigger", len(db.batch.calls), db.MaxBatchSize)
+			//log.Printf("db.go: wakeup batch.calls=%d / db.MaxBatchSize=%d => trigger", len(db.batch.calls), db.MaxBatchSize)
 		//}
 		go db.batch.trigger() // WARNING: DATA RACE Read at 0x00c015005420 by goroutine 36754: db.go:1107 db.go:999
 	} else {
