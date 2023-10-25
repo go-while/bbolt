@@ -287,6 +287,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		}
 	}
 
+	go db.batchProcessor()
 	// Mark the database as opened and return.
 	return db, nil
 }
@@ -927,18 +928,26 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 	errCh := make(chan error, 1)
 
 	db.batchMu.Lock()
-	if (db.batch == nil) || (db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize) {
-		// There is no existing batch, or the existing batch is full; start a new one.
+	// first: check if we have a batch running exceeding MaxBatchSize
+	if db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize {
+		// wake up batch, it's ready to run
+		//log.Printf("wakeup calls=%d => trigger", len(db.batch.calls))
+		go db.batch.trigger()
+		db.batchMu.Unlock() // so batch will (or should) run
+		db.batchMu.Lock() // we lock again
+	}
+	if db.batch == nil { // create new batch if no exists (maybe we triggered a batch before and db.batch should be nil now)
+		//id, running := db.count.getNextID()
+		//if running > 1 {
+		//	log.Printf("getNextID id=%d running=%d", id, running)
+		//}
 		db.batch = &batch{
 			db: db,
+			date: time.Now().UnixNano()+int64(db.MaxBatchDelay),
+			//id: id,
 		}
-		db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
 	}
 	db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
-	if len(db.batch.calls) >= db.MaxBatchSize {
-		// wake up batch, it's ready to run
-		go db.batch.trigger()
-	}
 	db.batchMu.Unlock()
 
 	err := <-errCh
@@ -948,6 +957,26 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 	return err
 }
 
+func (db *DB) batchProcessor() {
+	log.Printf("booting batchProcessor")
+	maxdelay := int64(db.MaxBatchDelay)
+	//maxbatch := db.MaxBatchSize
+	ticker := time.NewTicker(db.MaxBatchDelay)
+	now := time.Now().UnixNano()
+	for range ticker.C {
+		now = time.Now().UnixNano()
+		db.batchMu.Lock()
+		if db.batch != nil {
+			if db.batch.date < now && len(db.batch.calls) > 0 {
+				//log.Printf("batchProcessor calls=%d => trigger", len(db.batch.calls))
+				go db.batch.trigger()
+			}
+			db.batch.date = now+maxdelay
+		}
+		db.batchMu.Unlock()
+	}
+} // end func batchProcessor
+
 type call struct {
 	fn  func(*Tx) error
 	err chan<- error
@@ -955,7 +984,7 @@ type call struct {
 
 type batch struct {
 	db    *DB
-	timer *time.Timer
+	//timer *time.Timer
 	start sync.Once
 	calls []call
 }
@@ -969,7 +998,7 @@ func (b *batch) trigger() {
 // back to DB.Batch.
 func (b *batch) run() {
 	b.db.batchMu.Lock()
-	b.timer.Stop()
+	//b.timer.Stop()
 	// Make sure no new work is added to this batch, but don't break
 	// other batches.
 	if b.db.batch == b {
