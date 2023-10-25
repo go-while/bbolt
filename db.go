@@ -958,7 +958,7 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 }
 
 func (db *DB) batchProcessor() {
-	log.Printf("booting batchProcessor")
+	//log.Printf("booting batchProcessor")
 	maxdelay := int64(db.MaxBatchDelay)
 	//maxbatch := db.MaxBatchSize
 	ticker := time.NewTicker(db.MaxBatchDelay)
@@ -984,7 +984,7 @@ type call struct {
 
 type batch struct {
 	db    *DB
-	//timer *time.Timer
+	date int64
 	start sync.Once
 	calls []call
 }
