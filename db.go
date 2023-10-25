@@ -16,6 +16,8 @@ import (
 	"go.etcd.io/bbolt/internal/common"
 )
 
+var bPch = make(chan *DB, 4) // DEBUG TEST batchProcessor Channel
+
 // The time elapsed between consecutive file locking attempts.
 const flockRetryTimeout = 50 * time.Millisecond
 
@@ -175,6 +177,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	db := &DB{
 		opened: true,
 	}
+
 	// Set default options if no options are provided.
 	if options == nil {
 		options = DefaultOptions
@@ -290,6 +293,8 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		}
 	}
 
+	db.count = &count{}
+	go db.batchProcessor()
 	// Mark the database as opened and return.
 	return db, nil
 }
@@ -927,13 +932,14 @@ func (db *DB) View(fn func(*Tx) error) error {
 //
 // Batch is only useful when there are multiple goroutines calling it.
 const KILLER bool = false
-const BUGFIX bool = false
+const BUGFIX bool = true
 func (db *DB) Batch(fn func(*Tx) error) error {
 	errCh := make(chan error, 1)
 
 	trace := time.Now().UnixNano()
 	overwrites := false
 
+	if !BUGFIX {
 	// ORIGINAL WITH DEBUGS ADDED
 	//len_initial := -1
 	//len_overwrites := -1
@@ -955,14 +961,11 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 					}
 				default:
 					// 2023/10/25 00:59:41 ERROR db.batch.timer.C passed default db.batch.timer='&time.Timer{C:(<-chan time.Time)(nil), r:time.runtimeTimer{pp:0xc00002ea00, when:1524283842902363, period:0, f:(func(interface {}, uintptr))(0x4abca0), arg:(func())(0x4fddc0), seq:0x0, nextwhen:0, status:0x1}}'
-					log.Printf("ERROR db.batch.timer.C passed default db.batch.timer='%#v'", db.batch.timer)
+					//log.Printf("ERROR db.batch.timer.C passed default db.batch.timer='%#v'", db.batch.timer)
 			}
 		}
-		if db.count == nil {
-			db.count = &count{}
-		}
 		id, running := db.count.getNextID()
-		if running > 1 {
+		if running > 10 {
 			log.Printf("getNextID id=%d running=%d", id, running)
 		}
 		//var id uint64 // disables getNextID to test performance without
@@ -1013,6 +1016,7 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 		//log.Printf("db.go: nowakeup batch.calls=%d / db.MaxBatchSize=%d db.MaxBatchDelay=%d", len(db.batch.calls), db.MaxBatchSize, db.MaxBatchDelay)
 	}
 	db.batchMu.Unlock()
+	} //!BUGFIX
 
 /*
 	// TESTING BUGFIX1
@@ -1039,36 +1043,58 @@ func (db *DB) Batch(fn func(*Tx) error) error {
 	}
 */
 
-/*
-	// TESTING BUGFIX2 copy untouched yet
+	// TESTING BUGFIX2
 	if BUGFIX {
 		db.batchMu.Lock()
-		if db.batch == nil {
+		// first: check if we have a batch running exceeding MaxBatchSize
+		if db.batch != nil && len(db.batch.calls) >= db.MaxBatchSize {
+			// wake up batch, it's ready to run
+			//log.Printf("wakeup calls=%d => trigger", len(db.batch.calls))
+			go db.batch.trigger()
+			db.batchMu.Unlock() // so batch will (or should) run
+			db.batchMu.Lock() // we lock again
+		}
+		if db.batch == nil { // create new batch if no exists (maybe we triggered a batch before and db.batch should be nil now)
+			//id, running := db.count.getNextID()
+			//if running > 1 {
+			//	log.Printf("getNextID id=%d running=%d", id, running)
+			//}
 			db.batch = &batch{
 				db: db,
-				date: time.Now().UnixNano(),
+				date: time.Now().UnixNano()+int64(db.MaxBatchDelay),
+				//id: id,
 			}
-			//log.Printf("%d Launch timer db.MaxBatchDelay=%d", trace, db.MaxBatchDelay)
-			db.batch.timer = time.AfterFunc(db.MaxBatchDelay, db.batch.trigger)
 		}
 		db.batch.calls = append(db.batch.calls, call{fn: fn, err: errCh})
-		if len(db.batch.calls) >= db.MaxBatchSize {
-			// wake up batch, it's ready to run
-			// DEBUG
-			//if len(db.batch.calls) > db.MaxBatchSize {
-			//	log.Printf("%d db.go: wakeup batch.calls=%d / db.MaxBatchSize=%d", trace, len(db.batch.calls), db.MaxBatchSize)
-			//}
-			go db.batch.trigger()
-		}
 		db.batchMu.Unlock()
 	}
-*/
+
 	err := <-errCh
 	if err == trySolo {
 		err = db.Update(fn)
 	}
 	return err
 }
+
+func (db *DB) batchProcessor() {
+	log.Printf("booting batchProcessor")
+	maxdelay := int64(db.MaxBatchDelay)
+	//maxbatch := db.MaxBatchSize
+	ticker := time.NewTicker(db.MaxBatchDelay)
+	now := time.Now().UnixNano()
+	for range ticker.C {
+		now = time.Now().UnixNano()
+		db.batchMu.Lock()
+		if db.batch != nil {
+			if db.batch.date < now && len(db.batch.calls) > 0 {
+				//log.Printf("batchProcessor calls=%d => trigger", len(db.batch.calls))
+				go db.batch.trigger()
+			}
+			db.batch.date = now+maxdelay
+		}
+		db.batchMu.Unlock()
+	}
+} // end func batchProcessor
 
 type call struct {
 	fn  func(*Tx) error
@@ -1115,7 +1141,7 @@ func (c *count) getNextID() (id uint64, running uint64) {
 	return
 }
 
-func (c *count) sayStop() (running, lastid, stop uint64) {
+func (c *count) sayStop() (lastid, stop, running uint64) {
 	c.mux.Lock()
 	lastid = c.this
 	c.stop++
@@ -1229,11 +1255,12 @@ func (b *batch) run() {
 		// pass
 	}
 
-	b.timer.Stop()
-	running, lastid, stop := b.db.count.sayStop()
-	if running > 1 {
-		log.Printf("sayStop lastid=%d stop=%d running=%d", lastid, stop, running)
-	}
+	//b.timer.Stop()
+	//lastid, stop, running := b.db.count.sayStop()
+	//if lastid > 0 && running > 1 {
+	//	log.Printf("sayStop lastid=%d stop=%d running=%d", lastid, stop, running)
+	//}
+
 	// Make sure no new work is added to this batch, but don't break
 	// other batches.
 	if b.db.batch == b {
@@ -1263,8 +1290,9 @@ func (b *batch) run() {
 		/* SHORTER DEBUG */
 		if b.db.batch != nil && b != nil {
 			diff := b.db.batch.id-b.id
-			if diff >= 25 { // with pagesize 16K and maxbatchsize=3 maxbatchdelay=100ms i've seen diff more than 50
-				log.Printf("%d !9! b.db.batch.id=%d != b.id=%d diff=%d ??? running=%d lastid=%d stop=%d", trace, b.db.batch.id, b.id, diff, running, lastid, stop)
+			if diff >= 10 { // with pagesize 16K and maxbatchsize=3 maxbatchdelay=100ms i've seen diff more than 50
+				//log.Printf("%d !9! b.db.batch.id=%d != b.id=%d diff=%d ??? running=%d lastid=%d stop=%d", trace, b.db.batch.id, b.id, diff, running, lastid, stop)
+				log.Printf("%d !9! b.db.batch.id=%d != b.id=%d diff=%d ???", trace, b.db.batch.id, b.id, diff)
 			}
 		}
 
