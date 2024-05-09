@@ -145,7 +145,17 @@ func (b *Bucket) openBucket(value []byte) *Bucket {
 // CreateBucket creates a new bucket at the given key and returns the new bucket.
 // Returns an error if the key already exists, if the bucket name is blank, or if the bucket name is too long.
 // The bucket instance is only valid for the lifetime of the transaction.
-func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
+func (b *Bucket) CreateBucket(key []byte) (rb *Bucket, err error) {
+	if lg := b.tx.db.Logger(); lg != discardLogger {
+		lg.Debugf("Creating bucket %q", key)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Creating bucket %q failed: %v", key, err)
+			} else {
+				lg.Debugf("Creating bucket %q successfully", key)
+			}
+		}()
+	}
 	if b.tx.db == nil {
 		return nil, errors.ErrTxClosed
 	} else if !b.tx.writable {
@@ -154,12 +164,17 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 		return nil, errors.ErrBucketNameRequired
 	}
 
+	// Insert into node.
+	// Tip: Use a new variable `newKey` instead of reusing the existing `key` to prevent
+	// it from being marked as leaking, and accordingly cannot be allocated on stack.
+	newKey := cloneBytes(key)
+
 	// Move cursor to correct position.
 	c := b.Cursor()
-	k, _, flags := c.seek(key)
+	k, _, flags := c.seek(newKey)
 
 	// Return an error if there is an existing key.
-	if bytes.Equal(key, k) {
+	if bytes.Equal(newKey, k) {
 		if (flags & common.BucketLeafFlag) != 0 {
 			return nil, errors.ErrBucketExists
 		}
@@ -174,10 +189,6 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 	}
 	var value = bucket.write()
 
-	// Insert into node.
-	// Tip: Use a new variable `newKey` instead of reusing the existing `key` to prevent
-	// it from being marked as leaking, and accordingly cannot be allocated on stack.
-	newKey := cloneBytes(key)
 	c.node().put(newKey, newKey, value, 0, common.BucketLeafFlag)
 
 	// Since subbuckets are not allowed on inline buckets, we need to
@@ -191,7 +202,18 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 // CreateBucketIfNotExists creates a new bucket if it doesn't already exist and returns a reference to it.
 // Returns an error if the bucket name is blank, or if the bucket name is too long.
 // The bucket instance is only valid for the lifetime of the transaction.
-func (b *Bucket) CreateBucketIfNotExists(key []byte) (*Bucket, error) {
+func (b *Bucket) CreateBucketIfNotExists(key []byte) (rb *Bucket, err error) {
+	if lg := b.tx.db.Logger(); lg != discardLogger {
+		lg.Debugf("Creating bucket if not exist %q", key)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Creating bucket if not exist %q failed: %v", key, err)
+			} else {
+				lg.Debugf("Creating bucket if not exist %q successfully", key)
+			}
+		}()
+	}
+
 	if b.tx.db == nil {
 		return nil, errors.ErrTxClosed
 	} else if !b.tx.writable {
@@ -200,22 +222,27 @@ func (b *Bucket) CreateBucketIfNotExists(key []byte) (*Bucket, error) {
 		return nil, errors.ErrBucketNameRequired
 	}
 
+	// Insert into node.
+	// Tip: Use a new variable `newKey` instead of reusing the existing `key` to prevent
+	// it from being marked as leaking, and accordingly cannot be allocated on stack.
+	newKey := cloneBytes(key)
+
 	if b.buckets != nil {
-		if child := b.buckets[string(key)]; child != nil {
+		if child := b.buckets[string(newKey)]; child != nil {
 			return child, nil
 		}
 	}
 
 	// Move cursor to correct position.
 	c := b.Cursor()
-	k, v, flags := c.seek(key)
+	k, v, flags := c.seek(newKey)
 
 	// Return an error if there is an existing non-bucket key.
-	if bytes.Equal(key, k) {
+	if bytes.Equal(newKey, k) {
 		if (flags & common.BucketLeafFlag) != 0 {
 			var child = b.openBucket(v)
 			if b.buckets != nil {
-				b.buckets[string(key)] = child
+				b.buckets[string(newKey)] = child
 			}
 
 			return child, nil
@@ -231,10 +258,6 @@ func (b *Bucket) CreateBucketIfNotExists(key []byte) (*Bucket, error) {
 	}
 	var value = bucket.write()
 
-	// Insert into node.
-	// Tip: Use a new variable `newKey` instead of reusing the existing `key` to prevent
-	// it from being marked as leaking, and accordingly cannot be allocated on stack.
-	newKey := cloneBytes(key)
 	c.node().put(newKey, newKey, value, 0, common.BucketLeafFlag)
 
 	// Since subbuckets are not allowed on inline buckets, we need to
@@ -247,27 +270,40 @@ func (b *Bucket) CreateBucketIfNotExists(key []byte) (*Bucket, error) {
 
 // DeleteBucket deletes a bucket at the given key.
 // Returns an error if the bucket does not exist, or if the key represents a non-bucket value.
-func (b *Bucket) DeleteBucket(key []byte) error {
+func (b *Bucket) DeleteBucket(key []byte) (err error) {
+	if lg := b.tx.db.Logger(); lg != discardLogger {
+		lg.Debugf("Deleting bucket %q", key)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Deleting bucket %q failed: %v", key, err)
+			} else {
+				lg.Debugf("Deleting bucket %q successfully", key)
+			}
+		}()
+	}
+
 	if b.tx.db == nil {
 		return errors.ErrTxClosed
 	} else if !b.Writable() {
 		return errors.ErrTxNotWritable
 	}
 
+	newKey := cloneBytes(key)
+
 	// Move cursor to correct position.
 	c := b.Cursor()
-	k, _, flags := c.seek(key)
+	k, _, flags := c.seek(newKey)
 
 	// Return an error if bucket doesn't exist or is not a bucket.
-	if !bytes.Equal(key, k) {
+	if !bytes.Equal(newKey, k) {
 		return errors.ErrBucketNotFound
 	} else if (flags & common.BucketLeafFlag) == 0 {
 		return errors.ErrIncompatibleValue
 	}
 
 	// Recursively delete all child buckets.
-	child := b.Bucket(key)
-	err := child.ForEachBucket(func(k []byte) error {
+	child := b.Bucket(newKey)
+	err = child.ForEachBucket(func(k []byte) error {
 		if err := child.DeleteBucket(k); err != nil {
 			return fmt.Errorf("delete bucket: %s", err)
 		}
@@ -278,7 +314,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 	}
 
 	// Remove cached copy.
-	delete(b.buckets, string(key))
+	delete(b.buckets, string(newKey))
 
 	// Release all bucket pages to freelist.
 	child.nodes = nil
@@ -286,9 +322,108 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 	child.free()
 
 	// Delete the node if we have a matching key.
-	c.node().del(key)
+	c.node().del(newKey)
 
 	return nil
+}
+
+// MoveBucket moves a sub-bucket from the source bucket to the destination bucket.
+// Returns an error if
+//  1. the sub-bucket cannot be found in the source bucket;
+//  2. or the key already exists in the destination bucket;
+//  3. or the key represents a non-bucket value;
+//  4. the source and destination buckets are the same.
+func (b *Bucket) MoveBucket(key []byte, dstBucket *Bucket) (err error) {
+	lg := b.tx.db.Logger()
+	if lg != discardLogger {
+		lg.Debugf("Moving bucket %q", key)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Moving bucket %q failed: %v", key, err)
+			} else {
+				lg.Debugf("Moving bucket %q successfully", key)
+			}
+		}()
+	}
+
+	if b.tx.db == nil || dstBucket.tx.db == nil {
+		return errors.ErrTxClosed
+	} else if !b.Writable() || !dstBucket.Writable() {
+		return errors.ErrTxNotWritable
+	}
+
+	if b.tx.db.Path() != dstBucket.tx.db.Path() || b.tx != dstBucket.tx {
+		lg.Errorf("The source and target buckets are not in the same db file, source bucket in %s and target bucket in %s", b.tx.db.Path(), dstBucket.tx.db.Path())
+		return errors.ErrDifferentDB
+	}
+
+	newKey := cloneBytes(key)
+
+	// Move cursor to correct position.
+	c := b.Cursor()
+	k, v, flags := c.seek(newKey)
+
+	// Return an error if bucket doesn't exist or is not a bucket.
+	if !bytes.Equal(newKey, k) {
+		return errors.ErrBucketNotFound
+	} else if (flags & common.BucketLeafFlag) == 0 {
+		lg.Errorf("An incompatible key %s exists in the source bucket", newKey)
+		return errors.ErrIncompatibleValue
+	}
+
+	// Do nothing (return true directly) if the source bucket and the
+	// destination bucket are actually the same bucket.
+	if b == dstBucket || (b.RootPage() == dstBucket.RootPage() && b.RootPage() != 0) {
+		lg.Errorf("The source bucket (%s) and the target bucket (%s) are the same bucket", b, dstBucket)
+		return errors.ErrSameBuckets
+	}
+
+	// check whether the key already exists in the destination bucket
+	curDst := dstBucket.Cursor()
+	k, _, flags = curDst.seek(newKey)
+
+	// Return an error if there is an existing key in the destination bucket.
+	if bytes.Equal(newKey, k) {
+		if (flags & common.BucketLeafFlag) != 0 {
+			return errors.ErrBucketExists
+		}
+		lg.Errorf("An incompatible key %s exists in the target bucket", newKey)
+		return errors.ErrIncompatibleValue
+	}
+
+	// remove the sub-bucket from the source bucket
+	delete(b.buckets, string(newKey))
+	c.node().del(newKey)
+
+	// add te sub-bucket to the destination bucket
+	newValue := cloneBytes(v)
+	curDst.node().put(newKey, newKey, newValue, 0, common.BucketLeafFlag)
+
+	return nil
+}
+
+// Inspect returns the structure of the bucket.
+func (b *Bucket) Inspect() BucketStructure {
+	return b.recursivelyInspect([]byte("root"))
+}
+
+func (b *Bucket) recursivelyInspect(name []byte) BucketStructure {
+	bs := BucketStructure{Name: string(name)}
+
+	keyN := 0
+	c := b.Cursor()
+	for k, _, flags := c.first(); k != nil; k, _, flags = c.next() {
+		if flags&common.BucketLeafFlag != 0 {
+			childBucket := b.Bucket(k)
+			childBS := childBucket.recursivelyInspect(k)
+			bs.Children = append(bs.Children, childBS)
+		} else {
+			keyN++
+		}
+	}
+	bs.KeyN = keyN
+
+	return bs
 }
 
 // Get retrieves the value for a key in the bucket.
@@ -314,7 +449,17 @@ func (b *Bucket) Get(key []byte) []byte {
 // If the key exist then its previous value will be overwritten.
 // Supplied value must remain valid for the life of the transaction.
 // Returns an error if the bucket was created from a read-only transaction, if the key is blank, if the key is too large, or if the value is too large.
-func (b *Bucket) Put(key []byte, value []byte) error {
+func (b *Bucket) Put(key []byte, value []byte) (err error) {
+	if lg := b.tx.db.Logger(); lg != discardLogger {
+		lg.Debugf("Putting key %q", key)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Putting key %q failed: %v", key, err)
+			} else {
+				lg.Debugf("Putting key %q successfully", key)
+			}
+		}()
+	}
 	if b.tx.db == nil {
 		return errors.ErrTxClosed
 	} else if !b.Writable() {
@@ -327,19 +472,22 @@ func (b *Bucket) Put(key []byte, value []byte) error {
 		return errors.ErrValueTooLarge
 	}
 
-	// Move cursor to correct position.
-	c := b.Cursor()
-	k, _, flags := c.seek(key)
-
-	// Return an error if there is an existing key with a bucket value.
-	if bytes.Equal(key, k) && (flags&common.BucketLeafFlag) != 0 {
-		return errors.ErrIncompatibleValue
-	}
-
 	// Insert into node.
 	// Tip: Use a new variable `newKey` instead of reusing the existing `key` to prevent
 	// it from being marked as leaking, and accordingly cannot be allocated on stack.
 	newKey := cloneBytes(key)
+
+	// Move cursor to correct position.
+	c := b.Cursor()
+	k, _, flags := c.seek(newKey)
+
+	// Return an error if there is an existing key with a bucket value.
+	if bytes.Equal(newKey, k) && (flags&common.BucketLeafFlag) != 0 {
+		return errors.ErrIncompatibleValue
+	}
+
+	// gofail: var beforeBucketPut struct{}
+
 	c.node().put(newKey, newKey, value, 0, 0)
 
 	return nil
@@ -348,7 +496,18 @@ func (b *Bucket) Put(key []byte, value []byte) error {
 // Delete removes a key from the bucket.
 // If the key does not exist then nothing is done and a nil error is returned.
 // Returns an error if the bucket was created from a read-only transaction.
-func (b *Bucket) Delete(key []byte) error {
+func (b *Bucket) Delete(key []byte) (err error) {
+	if lg := b.tx.db.Logger(); lg != discardLogger {
+		lg.Debugf("Deleting key %q", key)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Deleting key %q failed: %v", key, err)
+			} else {
+				lg.Debugf("Deleting key %q successfully", key)
+			}
+		}()
+	}
+
 	if b.tx.db == nil {
 		return errors.ErrTxClosed
 	} else if !b.Writable() {
@@ -831,4 +990,10 @@ func cloneBytes(v []byte) []byte {
 	var clone = make([]byte, len(v))
 	copy(clone, v)
 	return clone
+}
+
+type BucketStructure struct {
+	Name     string            `json:"name"`              // name of the bucket
+	KeyN     int               `json:"keyN"`              // number of key/value pairs
+	Children []BucketStructure `json:"buckets,omitempty"` // child buckets
 }

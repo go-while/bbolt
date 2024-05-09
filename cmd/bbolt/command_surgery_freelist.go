@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -27,17 +26,9 @@ func newSurgeryFreelistCommand() *cobra.Command {
 func newSurgeryFreelistAbandonCommand() *cobra.Command {
 	var o surgeryBaseOptions
 	abandonFreelistCmd := &cobra.Command{
-		Use:   "abandon <bbolt-file> [options]",
+		Use:   "abandon <bbolt-file>",
 		Short: "Abandon the freelist from both meta pages",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("db file path not provided")
-			}
-			if len(args) > 1 {
-				return errors.New("too many arguments")
-			}
-			return nil
-		},
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.Validate(); err != nil {
 				return err
@@ -70,17 +61,9 @@ func surgeryFreelistAbandonFunc(srcDBPath string, cfg surgeryBaseOptions) error 
 func newSurgeryFreelistRebuildCommand() *cobra.Command {
 	var o surgeryBaseOptions
 	rebuildFreelistCmd := &cobra.Command{
-		Use:   "rebuild <bbolt-file> [options]",
+		Use:   "rebuild <bbolt-file>",
 		Short: "Rebuild the freelist",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("db file path not provided")
-			}
-			if len(args) > 1 {
-				return errors.New("too many arguments")
-			}
-			return nil
-		},
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.Validate(); err != nil {
 				return err

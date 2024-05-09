@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -65,6 +66,9 @@ func (tx *Tx) init(db *DB) {
 
 // ID returns the transaction id.
 func (tx *Tx) ID() int {
+	if tx == nil || tx.meta == nil {
+		return -1
+	}
 	return int(tx.meta.Txid())
 }
 
@@ -96,6 +100,11 @@ func (tx *Tx) Stats() TxStats {
 	return tx.stats
 }
 
+// Inspect returns the structure of the database.
+func (tx *Tx) Inspect() BucketStructure {
+	return tx.root.Inspect()
+}
+
 // Bucket retrieves a bucket by name.
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
@@ -123,6 +132,24 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	return tx.root.DeleteBucket(name)
 }
 
+// MoveBucket moves a sub-bucket from the source bucket to the destination bucket.
+// Returns an error if
+//  1. the sub-bucket cannot be found in the source bucket;
+//  2. or the key already exists in the destination bucket;
+//  3. the key represents a non-bucket value.
+//
+// If src is nil, it means moving a top level bucket into the target bucket.
+// If dst is nil, it means converting the child bucket into a top level bucket.
+func (tx *Tx) MoveBucket(child []byte, src *Bucket, dst *Bucket) error {
+	if src == nil {
+		src = &tx.root
+	}
+	if dst == nil {
+		dst = &tx.root
+	}
+	return src.MoveBucket(child, dst)
+}
+
 // ForEach executes a function for each bucket in the root.
 // If the provided function returns an error then the iteration is stopped and
 // the error is returned to the caller.
@@ -140,7 +167,20 @@ func (tx *Tx) OnCommit(fn func()) {
 // Commit writes all changes to disk, updates the meta page and closes the transaction.
 // Returns an error if a disk write error occurs, or if Commit is
 // called on a read-only transaction.
-func (tx *Tx) Commit() error {
+func (tx *Tx) Commit() (err error) {
+	txId := tx.ID()
+	lg := tx.db.Logger()
+	if lg != discardLogger {
+		lg.Debugf("Committing transaction %d", txId)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Committing transaction failed: %v", err)
+			} else {
+				lg.Debugf("Committing transaction %d successfully", txId)
+			}
+		}()
+	}
+
 	common.Assert(!tx.managed, "managed tx commit not allowed")
 	if tx.db == nil {
 		return berrors.ErrTxClosed
@@ -161,7 +201,8 @@ func (tx *Tx) Commit() error {
 
 	// spill data onto dirty pages.
 	startTime = time.Now()
-	if err := tx.root.spill(); err != nil {
+	if err = tx.root.spill(); err != nil {
+		lg.Errorf("spilling data onto dirty pages failed: %v", err)
 		tx.rollback()
 		return err
 	}
@@ -176,8 +217,9 @@ func (tx *Tx) Commit() error {
 	}
 
 	if !tx.db.NoFreelistSync {
-		err := tx.commitFreelist()
+		err = tx.commitFreelist()
 		if err != nil {
+			lg.Errorf("committing freelist failed: %v", err)
 			return err
 		}
 	} else {
@@ -190,7 +232,8 @@ func (tx *Tx) Commit() error {
 		// gofail: var lackOfDiskSpace string
 		// tx.rollback()
 		// return errors.New(lackOfDiskSpace)
-		if err := tx.db.grow(int(tx.meta.Pgid()+1) * tx.db.pageSize); err != nil {
+		if err = tx.db.grow(int(tx.meta.Pgid()+1) * tx.db.pageSize); err != nil {
+			lg.Errorf("growing db size failed, pgid: %d, pagesize: %d, error: %v", tx.meta.Pgid(), tx.db.pageSize, err)
 			tx.rollback()
 			return err
 		}
@@ -198,7 +241,8 @@ func (tx *Tx) Commit() error {
 
 	// Write dirty pages to disk.
 	startTime = time.Now()
-	if err := tx.write(); err != nil {
+	if err = tx.write(); err != nil {
+		lg.Errorf("writing data failed: %v", err)
 		tx.rollback()
 		return err
 	}
@@ -208,11 +252,11 @@ func (tx *Tx) Commit() error {
 		ch := tx.Check()
 		var errs []string
 		for {
-			err, ok := <-ch
+			chkErr, ok := <-ch
 			if !ok {
 				break
 			}
-			errs = append(errs, err.Error())
+			errs = append(errs, chkErr.Error())
 		}
 		if len(errs) > 0 {
 			panic("check fail: " + strings.Join(errs, "\n"))
@@ -220,7 +264,8 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Write meta to disk.
-	if err := tx.writeMeta(); err != nil {
+	if err = tx.writeMeta(); err != nil {
+		lg.Errorf("writeMeta failed: %v", err)
 		tx.rollback()
 		return err
 	}
@@ -414,8 +459,10 @@ func (tx *Tx) CopyFile(path string, mode os.FileMode) error {
 
 // allocate returns a contiguous block of memory starting at a given page.
 func (tx *Tx) allocate(count int) (*common.Page, error) {
+	lg := tx.db.Logger()
 	p, err := tx.db.allocate(tx.meta.Txid(), count)
 	if err != nil {
+		lg.Errorf("allocating failed, txid: %d, count: %d, error: %v", tx.meta.Txid(), count, err)
 		return nil, err
 	}
 
@@ -432,6 +479,7 @@ func (tx *Tx) allocate(count int) (*common.Page, error) {
 // write writes any dirty pages to disk.
 func (tx *Tx) write() error {
 	// Sort pages by id.
+	lg := tx.db.Logger()
 	pages := make(common.Pages, 0, len(tx.pages))
 	for _, p := range tx.pages {
 		pages = append(pages, p)
@@ -455,6 +503,7 @@ func (tx *Tx) write() error {
 			buf := common.UnsafeByteSlice(unsafe.Pointer(p), written, 0, int(sz))
 
 			if _, err := tx.db.ops.writeAt(buf, offset); err != nil {
+				lg.Errorf("writeAt failed, offset: %d: %w", offset, err)
 				return err
 			}
 
@@ -475,7 +524,9 @@ func (tx *Tx) write() error {
 
 	// Ignore file sync if flag is set on DB.
 	if !tx.db.NoSync || common.IgnoreNoSync {
+		// gofail: var beforeSyncDataPages struct{}
 		if err := fdatasync(tx.db); err != nil {
+			lg.Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
 			return err
 		}
 	}
@@ -503,16 +554,20 @@ func (tx *Tx) write() error {
 // writeMeta writes the meta to the disk.
 func (tx *Tx) writeMeta() error {
 	// Create a temporary buffer for the meta page.
+	lg := tx.db.Logger()
 	buf := make([]byte, tx.db.pageSize)
 	p := tx.db.pageInBuffer(buf, 0)
 	tx.meta.Write(p)
 
 	// Write the meta page to file.
 	if _, err := tx.db.ops.writeAt(buf, int64(p.Id())*int64(tx.db.pageSize)); err != nil {
+		lg.Errorf("writeAt failed, pgid: %d, pageSize: %d, error: %v", p.Id(), tx.db.pageSize, err)
 		return err
 	}
 	if !tx.db.NoSync || common.IgnoreNoSync {
+		// gofail: var beforeSyncMetaPage struct{}
 		if err := fdatasync(tx.db); err != nil {
+			lg.Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
 			return err
 		}
 	}

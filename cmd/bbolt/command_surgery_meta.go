@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -35,17 +34,9 @@ func newSurgeryMetaCommand() *cobra.Command {
 
 func newSurgeryMetaValidateCommand() *cobra.Command {
 	metaValidateCmd := &cobra.Command{
-		Use:   "validate <bbolt-file> [options]",
+		Use:   "validate <bbolt-file>",
 		Short: "Validate both meta pages",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("db file path not provided")
-			}
-			if len(args) > 1 {
-				return errors.New("too many arguments")
-			}
-			return nil
-		},
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return surgeryMetaValidateFunc(args[0])
 		},
@@ -91,11 +82,11 @@ var allowedMetaUpdateFields = map[string]struct{}{
 }
 
 // AddFlags sets the flags for `meta update` command.
-// Example: --fields root:16,freelist:8 --fields pgid:128 --fields txid:1234
-// Result: []string{"root:16", "freelist:8", "pgid:128", "txid:1234"}
+// Example: --fields root:16,freelist:8 --fields pgid:128
+// Result: []string{"root:16", "freelist:8", "pgid:128"}
 func (o *surgeryMetaUpdateOptions) AddFlags(fs *pflag.FlagSet) {
 	o.surgeryBaseOptions.AddFlags(fs)
-	fs.StringSliceVarP(&o.fields, "fields", "", o.fields, "comma separated list of fields (supported fields: pageSize, root, freelist, pgid and txid) to be updated, and each item is a colon-separated key-value pair")
+	fs.StringSliceVarP(&o.fields, "fields", "", o.fields, "comma separated list of fields (supported fields: pageSize, root, freelist and pgid) to be updated, and each item is a colon-separated key-value pair")
 	fs.Uint32VarP(&o.metaPageId, "meta-page", "", o.metaPageId, "the meta page ID to operate on, valid values are 0 and 1")
 }
 
@@ -129,17 +120,9 @@ func (o *surgeryMetaUpdateOptions) Validate() error {
 func newSurgeryMetaUpdateCommand() *cobra.Command {
 	var o surgeryMetaUpdateOptions
 	metaUpdateCmd := &cobra.Command{
-		Use:   "update <bbolt-file> [options]",
+		Use:   "update <bbolt-file>",
 		Short: "Update fields in meta pages",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("db file path not provided")
-			}
-			if len(args) > 1 {
-				return errors.New("too many arguments")
-			}
-			return nil
-		},
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.Validate(); err != nil {
 				return err

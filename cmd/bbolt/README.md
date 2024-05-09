@@ -72,7 +72,7 @@
   ```bash
   $bbolt version
   bbolt version: 1.3.7
-  Go Version: go1.21.1
+  Go Version: go1.21.6
   Go OS/Arch: darwin/arm64
   ```
 
@@ -162,6 +162,61 @@
       Bytes used for inlined buckets: 780 (0%)
   ```
 
+### inspect
+- `inspect` inspect the structure of the database.
+- Usage: `bbolt inspect [path to the bbolt database]`
+
+  Example:
+```bash
+$ ./bbolt inspect ~/default.etcd/member/snap/db
+{
+    "name": "root",
+    "keyN": 0,
+    "buckets": [
+        {
+            "name": "alarm",
+            "keyN": 0
+        },
+        {
+            "name": "auth",
+            "keyN": 2
+        },
+        {
+            "name": "authRoles",
+            "keyN": 1
+        },
+        {
+            "name": "authUsers",
+            "keyN": 1
+        },
+        {
+            "name": "cluster",
+            "keyN": 1
+        },
+        {
+            "name": "key",
+            "keyN": 1285
+        },
+        {
+            "name": "lease",
+            "keyN": 2
+        },
+        {
+            "name": "members",
+            "keyN": 1
+        },
+        {
+            "name": "members_removed",
+            "keyN": 0
+        },
+        {
+            "name": "meta",
+            "keyN": 3
+        }
+    ]
+}
+```
+
 ### pages
 
 - Pages prints a table of pages with their type (meta, leaf, branch, freelist).
@@ -241,7 +296,7 @@
       --value-only
           Print only the value
       --format
-          Output format. One of: auto|ascii-encoded|hex|bytes|redacted (default=ascii-encoded)
+          Output format. One of: auto|ascii-encoded|hex|bytes|redacted (default=auto)
   ```
 
   Example:
@@ -269,7 +324,7 @@
 
   Additional options include:
   --format
-    Output format. One of: auto|ascii-encoded|hex|bytes|redacted (default=bytes)
+    Output format. One of: auto|ascii-encoded|hex|bytes|redacted (default=auto)
   ```
 
   Example 1:
@@ -303,7 +358,7 @@
 
   Additional options include:
   --format
-    Output format. One of: auto|ascii-encoded|hex|bytes|redacted (default=bytes)
+    Output format. One of: auto|ascii-encoded|hex|bytes|redacted (default=auto)
   --parse-format
     Input format (of key). One of: ascii-encoded|hex (default=ascii-encoded)"
   ```

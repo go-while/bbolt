@@ -69,6 +69,7 @@ New minor versions may add additional features to the API.
     - [LMDB](#lmdb)
   - [Caveats & Limitations](#caveats--limitations)
   - [Reading the Source](#reading-the-source)
+  - [Known Issues](#known-issues)
   - [Other Projects Using Bolt](#other-projects-using-bolt)
 
 ## Getting Started
@@ -301,7 +302,7 @@ You can retrieve an existing bucket using the `Tx.Bucket()` function:
 db.Update(func(tx *bolt.Tx) error {
 	b := tx.Bucket([]byte("MyBucket"))
 	if b == nil {
-		return fmt.Errorf("bucket does not exist")
+		return errors.New("bucket does not exist")
 	}
 	return nil
 })
@@ -440,10 +441,19 @@ Prev()   Move to the previous key.
 ```
 
 Each of those functions has a return signature of `(key []byte, value []byte)`.
-When you have iterated to the end of the cursor then `Next()` will return a
-`nil` key.  You must seek to a position using `First()`, `Last()`, or `Seek()`
-before calling `Next()` or `Prev()`. If you do not seek to a position then
-these functions will return a `nil` key.
+You must seek to a position using `First()`, `Last()`, or `Seek()` before calling
+`Next()` or `Prev()`. If you do not seek to a position then these functions will
+return a `nil` key.
+
+When you have iterated to the end of the cursor, then `Next()` will return a
+`nil` key and the cursor still points to the last element if present. When you
+have iterated to the beginning of the cursor, then `Prev()` will return a `nil`
+key and the cursor still points to the first element if present.
+
+If you remove key/value pairs during iteration, the cursor may automatically
+move to the next position if present in current node each time removing a key.
+When you call `c.Next()` after removing a key, it may skip one key/value pair.  
+Refer to [pull/611](https://github.com/etcd-io/bbolt/pull/611) to get more detailed info.
 
 During iteration, if the key is non-`nil` but the value is `nil`, that means
 the key refers to a bucket rather than a value.  Use `Bucket.Bucket()` to
@@ -869,6 +879,12 @@ Here are a few things to note when evaluating and using Bolt:
   to grow. However, it's important to note that deleting large chunks of data
   will not allow you to reclaim that space on disk.
 
+* Removing key/values pairs in a bucket during iteration on the bucket using
+  cursor may not work properly. Each time when removing a key/value pair, the
+  cursor may automatically move to the next position if present. When users
+  call `c.Next()` after removing a key, it may skip one key/value pair.
+  Refer to https://github.com/etcd-io/bbolt/pull/611 for more detailed info.
+
   For more information on page allocation, [see this comment][page-allocation].
 
 [page-allocation]: https://github.com/boltdb/bolt/issues/308#issuecomment-74811638
@@ -894,7 +910,7 @@ The best places to start are the main entry points into Bolt:
 
 - `Bucket.Put()` - Writes a key/value pair into a bucket. After validating the
   arguments, a cursor is used to traverse the B+tree to the page and position
-  where they key & value will be written. Once the position is found, the bucket
+  where the key & value will be written. Once the position is found, the bucket
   materializes the underlying page and the page's parent pages into memory as
   "nodes". These nodes are where mutations occur during read-write transactions.
   These changes get flushed to disk during commit.
@@ -923,6 +939,21 @@ The best places to start are the main entry points into Bolt:
 If you have additional notes that could be helpful for others, please submit
 them via pull request.
 
+## Known Issues
+
+- bbolt might run into data corruption issue on Linux when the feature
+  [ext4: fast commit](https://lwn.net/Articles/842385/), which was introduced in
+  linux kernel version v5.10, is enabled. The fixes to the issue were included in
+  linux kernel version v5.17, please refer to links below,
+
+  * [ext4: fast commit may miss tracking unwritten range during ftruncate](https://lore.kernel.org/linux-ext4/20211223032337.5198-3-yinxin.x@bytedance.com/)
+  * [ext4: fast commit may not fallback for ineligible commit](https://lore.kernel.org/lkml/202201091544.W5HHEXAp-lkp@intel.com/T/#ma0768815e4b5f671e9e451d578256ef9a76fe30e)
+  * [ext4 updates for 5.17](https://lore.kernel.org/lkml/YdyxjTFaLWif6BCM@mit.edu/)
+
+  Please also refer to the discussion in https://github.com/etcd-io/bbolt/issues/562.
+
+- Writing a value with a length of 0 will always result in reading back an empty `[]byte{}` value.
+  Please refer to [issues/726#issuecomment-2061694802](https://github.com/etcd-io/bbolt/issues/726#issuecomment-2061694802).
 
 ## Other Projects Using Bolt
 
@@ -969,6 +1000,7 @@ Below is a list of public, open source projects that use Bolt:
 * [MetricBase](https://github.com/msiebuhr/MetricBase) - Single-binary version of Graphite.
 * [MuLiFS](https://github.com/dankomiocevic/mulifs) - Music Library Filesystem creates a filesystem to organise your music files.
 * [NATS](https://github.com/nats-io/nats-streaming-server) - NATS Streaming uses bbolt for message and metadata storage.
+* [Portainer](https://github.com/portainer/portainer) - A lightweight service delivery platform for containerized applications that can be used to manage Docker, Swarm, Kubernetes and ACI environments.
 * [Prometheus Annotation Server](https://github.com/oliver006/prom_annotation_server) - Annotation server for PromDash & Prometheus service monitoring system.
 * [Rain](https://github.com/cenkalti/rain) - BitTorrent client and library.
 * [reef-pi](https://github.com/reef-pi/reef-pi) - reef-pi is an award winning, modular, DIY reef tank controller using easy to learn electronics based on a Raspberry Pi.

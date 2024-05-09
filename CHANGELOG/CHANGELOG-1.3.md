@@ -2,6 +2,27 @@ Note that we start to track changes starting from v1.3.7.
 
 <hr>
 
+## v1.3.10(2024-05-06)
+
+### BoltDB
+- [Remove deprecated `UnsafeSlice` and use `unsafe.Slice`](https://github.com/etcd-io/bbolt/pull/717)
+- [Stabilize the behaviour of Prev when the cursor already points to the first element](https://github.com/etcd-io/bbolt/pull/744)
+
+### Other
+- [Bump go version to 1.21.9](https://github.com/etcd-io/bbolt/pull/713)
+
+<hr>
+
+## v1.3.9(2024-02-24)
+
+### BoltDB
+- [Clone the key before operating data in bucket against the key](https://github.com/etcd-io/bbolt/pull/639)
+
+### CMD
+- [Fix `bbolt keys` and `bbolt get` to prevent them from panicking when no parameter provided](https://github.com/etcd-io/bbolt/pull/683)
+
+<hr>
+
 ## v1.3.8(2023-10-26)
 
 ### BoltDB

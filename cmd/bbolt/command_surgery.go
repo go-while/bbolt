@@ -17,7 +17,7 @@ var (
 	ErrSurgeryFreelistAlreadyExist = errors.New("the file already has freelist, please consider to abandon the freelist to forcibly rebuild it")
 )
 
-func newSurgeryCobraCommand() *cobra.Command {
+func newSurgeryCommand() *cobra.Command {
 	surgeryCmd := &cobra.Command{
 		Use:   "surgery <subcommand>",
 		Short: "surgery related commands",
@@ -44,7 +44,7 @@ func (o *surgeryBaseOptions) AddFlags(fs *pflag.FlagSet) {
 
 func (o *surgeryBaseOptions) Validate() error {
 	if o.outputDBFilePath == "" {
-		return fmt.Errorf("output database path wasn't given, specify output database file path with --output option")
+		return errors.New("output database path wasn't given, specify output database file path with --output option")
 	}
 	return nil
 }
@@ -52,17 +52,9 @@ func (o *surgeryBaseOptions) Validate() error {
 func newSurgeryRevertMetaPageCommand() *cobra.Command {
 	var o surgeryBaseOptions
 	revertMetaPageCmd := &cobra.Command{
-		Use:   "revert-meta-page <bbolt-file> [options]",
+		Use:   "revert-meta-page <bbolt-file>",
 		Short: "Revert the meta page to revert the changes performed by the latest transaction",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("db file path not provided")
-			}
-			if len(args) > 1 {
-				return errors.New("too many arguments")
-			}
-			return nil
-		},
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.Validate(); err != nil {
 				return err
@@ -119,17 +111,9 @@ func (o *surgeryCopyPageOptions) Validate() error {
 func newSurgeryCopyPageCommand() *cobra.Command {
 	var o surgeryCopyPageOptions
 	copyPageCmd := &cobra.Command{
-		Use:   "copy-page <bbolt-file> [options]",
+		Use:   "copy-page <bbolt-file>",
 		Short: "Copy page from the source page Id to the destination page Id",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("db file path not provided")
-			}
-			if len(args) > 1 {
-				return errors.New("too many arguments")
-			}
-			return nil
-		},
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.Validate(); err != nil {
 				return err
@@ -160,7 +144,7 @@ func surgeryCopyPageFunc(srcDBPath string, cfg surgeryCopyPageOptions) error {
 	}
 	if meta.IsFreelistPersisted() {
 		fmt.Fprintf(os.Stdout, "WARNING: the free list might have changed.\n")
-		fmt.Fprintf(os.Stdout, "Please consider executing `./bbolt surgery abandon-freelist ...`\n")
+		fmt.Fprintf(os.Stdout, "Please consider executing `./bbolt surgery freelist abandon ...`\n")
 	}
 
 	fmt.Fprintf(os.Stdout, "The page %d was successfully copied to page %d\n", cfg.sourcePageId, cfg.destinationPageId)
@@ -191,17 +175,9 @@ func (o *surgeryClearPageOptions) Validate() error {
 func newSurgeryClearPageCommand() *cobra.Command {
 	var o surgeryClearPageOptions
 	clearPageCmd := &cobra.Command{
-		Use:   "clear-page <bbolt-file> [options]",
+		Use:   "clear-page <bbolt-file>",
 		Short: "Clears all elements from the given page, which can be a branch or leaf page",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("db file path not provided")
-			}
-			if len(args) > 1 {
-				return errors.New("too many arguments")
-			}
-			return nil
-		},
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.Validate(); err != nil {
 				return err
@@ -229,7 +205,7 @@ func surgeryClearPageFunc(srcDBPath string, cfg surgeryClearPageOptions) error {
 
 	if needAbandonFreelist {
 		fmt.Fprintf(os.Stdout, "WARNING: The clearing has abandoned some pages that are not yet referenced from free list.\n")
-		fmt.Fprintf(os.Stdout, "Please consider executing `./bbolt surgery abandon-freelist ...`\n")
+		fmt.Fprintf(os.Stdout, "Please consider executing `./bbolt surgery freelist abandon ...`\n")
 	}
 
 	fmt.Fprintf(os.Stdout, "The page (%d) was cleared\n", cfg.pageId)
@@ -266,17 +242,9 @@ func (o *surgeryClearPageElementsOptions) Validate() error {
 func newSurgeryClearPageElementsCommand() *cobra.Command {
 	var o surgeryClearPageElementsOptions
 	clearElementCmd := &cobra.Command{
-		Use:   "clear-page-elements <bbolt-file> [options]",
+		Use:   "clear-page-elements <bbolt-file>",
 		Short: "Clears elements from the given page, which can be a branch or leaf page",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return errors.New("db file path not provided")
-			}
-			if len(args) > 1 {
-				return errors.New("too many arguments")
-			}
-			return nil
-		},
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := o.Validate(); err != nil {
 				return err
@@ -304,7 +272,7 @@ func surgeryClearPageElementFunc(srcDBPath string, cfg surgeryClearPageElementsO
 
 	if needAbandonFreelist {
 		fmt.Fprintf(os.Stdout, "WARNING: The clearing has abandoned some pages that are not yet referenced from free list.\n")
-		fmt.Fprintf(os.Stdout, "Please consider executing `./bbolt surgery abandon-freelist ...`\n")
+		fmt.Fprintf(os.Stdout, "Please consider executing `./bbolt surgery freelist abandon ...`\n")
 	}
 
 	fmt.Fprintf(os.Stdout, "All elements in [%d, %d) in page %d were cleared\n", cfg.startElementIdx, cfg.endElementIdx, cfg.pageId)
@@ -329,14 +297,4 @@ func readMetaPage(path string) (*common.Meta, error) {
 		return m[0], nil
 	}
 	return m[1], nil
-}
-
-func checkSourceDBPath(srcPath string) (os.FileInfo, error) {
-	fi, err := os.Stat(srcPath)
-	if os.IsNotExist(err) {
-		return nil, fmt.Errorf("source database file %q doesn't exist", srcPath)
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to open source database file %q: %v", srcPath, err)
-	}
-	return fi, nil
 }

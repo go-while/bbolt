@@ -116,6 +116,8 @@ type DB struct {
 	// Supported only on Unix via mlock/munlock syscalls.
 	Mlock bool
 
+	logger Logger
+
 	path     string
 	openFile func(string, int, os.FileMode) (*os.File, error)
 	file     *os.File
@@ -173,10 +175,11 @@ func (db *DB) String() string {
 // If the file does not exist then it will be created automatically with a given file mode.
 // Passing in nil options will cause Bolt to open the database with the default options.
 // Note: For read/write transactions, ensure the owner has write permission on the created/opened database file, e.g. 0600
-func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
-	db := &DB{
+func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
+	db = &DB{
 		opened: true,
 	}
+
 	// Set default options if no options are provided.
 	if options == nil {
 		options = DefaultOptions
@@ -194,6 +197,24 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	db.MaxBatchDelay = common.DefaultMaxBatchDelay
 	db.AllocSize = common.DefaultAllocSize
 
+	if options.Logger == nil {
+		db.logger = getDiscardLogger()
+	} else {
+		db.logger = options.Logger
+	}
+
+	lg := db.Logger()
+	if lg != discardLogger {
+		lg.Infof("Opening db file (%s) with mode %x and with options: %s", path, mode, options)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Opening bbolt db (%s) failed: %v", path, err)
+			} else {
+				lg.Infof("Opening bbolt db (%s) successfully", path)
+			}
+		}()
+	}
+
 	flag := os.O_RDWR
 	if options.ReadOnly {
 		flag = os.O_RDONLY
@@ -210,9 +231,9 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	}
 
 	// Open data file and separate sync handler for metadata writes.
-	var err error
 	if db.file, err = db.openFile(path, flag, mode); err != nil {
 		_ = db.close()
+		lg.Errorf("failed to open db file (%s): %v", path, err)
 		return nil, err
 	}
 	db.path = db.file.Name()
@@ -224,8 +245,9 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	// if !options.ReadOnly.
 	// The database file is locked using the shared lock (more than one process may
 	// hold a lock at the same time) otherwise (options.ReadOnly is set).
-	if err := flock(db, !db.readOnly, options.Timeout); err != nil {
+	if err = flock(db, !db.readOnly, options.Timeout); err != nil {
 		_ = db.close()
+		lg.Errorf("failed to lock db file (%s), readonly: %t, error: %v", path, db.readOnly, err)
 		return nil, err
 	}
 
@@ -238,23 +260,24 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	}
 
 	// Initialize the database if it doesn't exist.
-	if info, err := db.file.Stat(); err != nil {
+	if info, statErr := db.file.Stat(); statErr != nil {
 		_ = db.close()
-		return nil, err
+		lg.Errorf("failed to get db file's stats (%s): %v", path, err)
+		return nil, statErr
 	} else if info.Size() == 0 {
 		// Initialize new files with meta pages.
-		if err := db.init(); err != nil {
+		if err = db.init(); err != nil {
 			// clean up file descriptor on initialization fail
 			_ = db.close()
+			lg.Errorf("failed to initialize db file (%s): %v", path, err)
 			return nil, err
 		}
 	} else {
 		// try to get the page size from the metadata pages
-		if pgSize, err := db.getPageSize(); err == nil {
-			db.pageSize = pgSize
-		} else {
+		if db.pageSize, err = db.getPageSize(); err != nil {
 			_ = db.close()
-			return nil, berrors.ErrInvalid
+			lg.Errorf("failed to get page size from db file (%s): %v", path, err)
+			return nil, err
 		}
 	}
 
@@ -266,8 +289,9 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	}
 
 	// Memory map the data file.
-	if err := db.mmap(options.InitialMmapSize); err != nil {
+	if err = db.mmap(options.InitialMmapSize); err != nil {
 		_ = db.close()
+		lg.Errorf("failed to map db file (%s): %v", path, err)
 		return nil, err
 	}
 
@@ -282,13 +306,14 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	// Flush freelist when transitioning from no sync to sync so
 	// NoFreelistSync unaware boltdb can open the db later.
 	if !db.NoFreelistSync && !db.hasSyncedFreelist() {
-		tx, err := db.Begin(true)
+		tx, txErr := db.Begin(true)
 		if tx != nil {
-			err = tx.Commit()
+			txErr = tx.Commit()
 		}
-		if err != nil {
+		if txErr != nil {
+			lg.Errorf("starting readwrite transaction failed: %v", txErr)
 			_ = db.close()
-			return nil, err
+			return nil, txErr
 		}
 	}
 
@@ -425,9 +450,13 @@ func (db *DB) mmap(minsz int) (err error) {
 	db.mmaplock.Lock()
 	defer db.mmaplock.Unlock()
 
+	lg := db.Logger()
+
 	// Ensure the size is at least the minimum size.
-	fileSize, err := db.fileSize()
+	var fileSize int
+	fileSize, err = db.fileSize()
 	if err != nil {
+		lg.Errorf("getting file size failed: %w", err)
 		return err
 	}
 	var size = fileSize
@@ -436,6 +465,7 @@ func (db *DB) mmap(minsz int) (err error) {
 	}
 	size, err = db.mmapSize(size)
 	if err != nil {
+		lg.Errorf("getting map size failed: %w", err)
 		return err
 	}
 
@@ -460,6 +490,7 @@ func (db *DB) mmap(minsz int) (err error) {
 	// gofail: var mapError string
 	// return errors.New(mapError)
 	if err = mmap(db, size); err != nil {
+		lg.Errorf("[GOOS: %s, GOARCH: %s] mmap failed, size: %d, error: %v", runtime.GOOS, runtime.GOARCH, size, err)
 		return err
 	}
 
@@ -490,6 +521,7 @@ func (db *DB) mmap(minsz int) (err error) {
 	err0 := db.meta0.Validate()
 	err1 := db.meta1.Validate()
 	if err0 != nil && err1 != nil {
+		lg.Errorf("both meta pages are invalid, meta0: %v, meta1: %v", err0, err1)
 		return err0
 	}
 
@@ -512,6 +544,7 @@ func (db *DB) munmap() error {
 	// gofail: var unmapError string
 	// return errors.New(unmapError)
 	if err := munmap(db); err != nil {
+		db.Logger().Errorf("[GOOS: %s, GOARCH: %s] munmap failed, db.datasz: %d, error: %v", runtime.GOOS, runtime.GOARCH, db.datasz, err)
 		return fmt.Errorf("unmap error: " + err.Error())
 	}
 
@@ -531,7 +564,7 @@ func (db *DB) mmapSize(size int) (int, error) {
 
 	// Verify the requested size is not above the maximum allowed.
 	if size > maxMapSize {
-		return 0, fmt.Errorf("mmap too large")
+		return 0, errors.New("mmap too large")
 	}
 
 	// If larger than 1GB then grow by 1GB at a time.
@@ -559,6 +592,7 @@ func (db *DB) munlock(fileSize int) error {
 	// gofail: var munlockError string
 	// return errors.New(munlockError)
 	if err := munlock(db, fileSize); err != nil {
+		db.Logger().Errorf("[GOOS: %s, GOARCH: %s] munlock failed, fileSize: %d, db.datasz: %d, error: %v", runtime.GOOS, runtime.GOARCH, fileSize, db.datasz, err)
 		return fmt.Errorf("munlock error: " + err.Error())
 	}
 	return nil
@@ -568,6 +602,7 @@ func (db *DB) mlock(fileSize int) error {
 	// gofail: var mlockError string
 	// return errors.New(mlockError)
 	if err := mlock(db, fileSize); err != nil {
+		db.Logger().Errorf("[GOOS: %s, GOARCH: %s] mlock failed, fileSize: %d, db.datasz: %d, error: %v", runtime.GOOS, runtime.GOARCH, fileSize, db.datasz, err)
 		return fmt.Errorf("mlock error: " + err.Error())
 	}
 	return nil
@@ -618,9 +653,11 @@ func (db *DB) init() error {
 
 	// Write the buffer to our data file.
 	if _, err := db.ops.writeAt(buf, 0); err != nil {
+		db.Logger().Errorf("writeAt failed: %w", err)
 		return err
 	}
 	if err := fdatasync(db); err != nil {
+		db.Logger().Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
 		return err
 	}
 
@@ -703,11 +740,29 @@ func (db *DB) close() error {
 //
 // IMPORTANT: You must close read-only transactions after you are finished or
 // else the database will not reclaim old pages.
-func (db *DB) Begin(writable bool) (*Tx, error) {
+func (db *DB) Begin(writable bool) (t *Tx, err error) {
+	if lg := db.Logger(); lg != discardLogger {
+		lg.Debugf("Starting a new transaction [writable: %t]", writable)
+		defer func() {
+			if err != nil {
+				lg.Errorf("Starting a new transaction [writable: %t] failed: %v", writable, err)
+			} else {
+				lg.Debugf("Starting a new transaction [writable: %t] successfully", writable)
+			}
+		}()
+	}
+
 	if writable {
 		return db.beginRWTx()
 	}
 	return db.beginTx()
+}
+
+func (db *DB) Logger() Logger {
+	if db == nil || db.logger == nil {
+		return getDiscardLogger()
+	}
+	return db.logger
 }
 
 func (db *DB) beginTx() (*Tx, error) {
@@ -1043,7 +1098,20 @@ func safelyCall(fn func(*Tx) error, tx *Tx) (err error) {
 //
 // This is not necessary under normal operation, however, if you use NoSync
 // then it allows you to force the database file to sync against the disk.
-func (db *DB) Sync() error { return fdatasync(db) }
+func (db *DB) Sync() (err error) {
+	if lg := db.Logger(); lg != discardLogger {
+		lg.Debug("Syncing bbolt db (%s)", db.path)
+		defer func() {
+			if err != nil {
+				lg.Errorf("[GOOS: %s, GOARCH: %s] syncing bbolt db (%s) failed: %v", runtime.GOOS, runtime.GOARCH, db.path, err)
+			} else {
+				lg.Debugf("Syncing bbolt db (%s) successfully", db.path)
+			}
+		}()
+	}
+
+	return fdatasync(db)
+}
 
 // Stats retrieves ongoing performance stats for the database.
 // This is only updated when a transaction closes.
@@ -1132,8 +1200,10 @@ func (db *DB) allocate(txid common.Txid, count int) (*common.Page, error) {
 // grow grows the size of the database to the given sz.
 func (db *DB) grow(sz int) error {
 	// Ignore if the new size is less than available file size.
+	lg := db.Logger()
 	fileSize, err := db.fileSize()
 	if err != nil {
+		lg.Errorf("getting file size failed: %w", err)
 		return err
 	}
 	if sz <= fileSize {
@@ -1155,10 +1225,12 @@ func (db *DB) grow(sz int) error {
 			// gofail: var resizeFileError string
 			// return errors.New(resizeFileError)
 			if err := db.file.Truncate(int64(sz)); err != nil {
+				lg.Errorf("[GOOS: %s, GOARCH: %s] truncating file failed, size: %d, db.datasz: %d, error: %v", runtime.GOOS, runtime.GOARCH, sz, db.datasz, err)
 				return fmt.Errorf("file resize error: %s", err)
 			}
 		}
 		if err := db.file.Sync(); err != nil {
+			lg.Errorf("[GOOS: %s, GOARCH: %s] syncing file failed, db.datasz: %d, error: %v", runtime.GOOS, runtime.GOARCH, db.datasz, err)
 			return fmt.Errorf("file sync error: %s", err)
 		}
 		if db.Mlock {
@@ -1196,7 +1268,7 @@ func (db *DB) freepages() []common.Pgid {
 			panic(fmt.Sprintf("freepages: failed to get all reachable pages (%v)", e))
 		}
 	}()
-	tx.checkBucket(&tx.root, reachable, nofreed, HexKVStringer(), ech)
+	tx.recursivelyCheckBucket(&tx.root, reachable, nofreed, HexKVStringer(), ech)
 	close(ech)
 
 	// TODO: If check bucket reported any corruptions (ech) we shouldn't proceed to freeing the pages.
@@ -1268,6 +1340,19 @@ type Options struct {
 	// It prevents potential page faults, however
 	// used memory can't be reclaimed. (UNIX only)
 	Mlock bool
+
+	// Logger is the logger used for bbolt.
+	Logger Logger
+}
+
+func (o *Options) String() string {
+	if o == nil {
+		return "{}"
+	}
+
+	return fmt.Sprintf("{Timeout: %s, NoGrowSync: %t, NoFreelistSync: %t, PreLoadFreelist: %t, FreelistType: %s, ReadOnly: %t, MmapFlags: %x, InitialMmapSize: %d, PageSize: %d, NoSync: %t, OpenFile: %p, Mlock: %t, Logger: %p}",
+		o.Timeout, o.NoGrowSync, o.NoFreelistSync, o.PreLoadFreelist, o.FreelistType, o.ReadOnly, o.MmapFlags, o.InitialMmapSize, o.PageSize, o.NoSync, o.OpenFile, o.Mlock, o.Logger)
+
 }
 
 // DefaultOptions represent the options used if nil options are passed into Open().

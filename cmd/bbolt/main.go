@@ -55,6 +55,9 @@ var (
 
 	// ErrKeyNotFound is returned when a key is not found.
 	ErrKeyNotFound = errors.New("key not found")
+
+	// ErrNotEnoughArgs is returned with a cmd is being executed with fewer arguments.
+	ErrNotEnoughArgs = errors.New("not enough arguments")
 )
 
 func main() {
@@ -120,8 +123,6 @@ func (m *Main) Run(args ...string) error {
 		return newBenchCommand(m).Run(args[1:]...)
 	case "buckets":
 		return newBucketsCommand(m).Run(args[1:]...)
-	case "check":
-		return newCheckCommand(m).Run(args[1:]...)
 	case "compact":
 		return newCompactCommand(m).Run(args[1:]...)
 	case "dump":
@@ -170,85 +171,10 @@ The commands are:
     pages       print list of pages with their types
     page-item   print the key and value of a page item.
     stats       iterate over all pages and generate usage stats
+    inspect     inspect the structure of the database
     surgery     perform surgery on bbolt database
 
 Use "bbolt [command] -h" for more information about a command.
-`, "\n")
-}
-
-// checkCommand represents the "check" command execution.
-type checkCommand struct {
-	baseCommand
-}
-
-// newCheckCommand returns a checkCommand.
-func newCheckCommand(m *Main) *checkCommand {
-	c := &checkCommand{}
-	c.baseCommand = m.baseCommand
-	return c
-}
-
-// Run executes the command.
-func (cmd *checkCommand) Run(args ...string) error {
-	// Parse flags.
-	fs := flag.NewFlagSet("", flag.ContinueOnError)
-	help := fs.Bool("h", false, "")
-	if err := fs.Parse(args); err != nil {
-		return err
-	} else if *help {
-		fmt.Fprintln(cmd.Stderr, cmd.Usage())
-		return ErrUsage
-	}
-
-	// Require database path.
-	path := fs.Arg(0)
-	if path == "" {
-		return ErrPathRequired
-	} else if _, err := os.Stat(path); os.IsNotExist(err) {
-		return ErrFileNotFound
-	}
-
-	// Open database.
-	db, err := bolt.Open(path, 0600, &bolt.Options{
-		ReadOnly:        true,
-		PreLoadFreelist: true,
-	})
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	// Perform consistency check.
-	return db.View(func(tx *bolt.Tx) error {
-		var count int
-		for err := range tx.Check(bolt.WithKVStringer(CmdKvStringer())) {
-			fmt.Fprintln(cmd.Stdout, err)
-			count++
-		}
-
-		// Print summary of errors.
-		if count > 0 {
-			fmt.Fprintf(cmd.Stdout, "%d errors found\n", count)
-			return guts_cli.ErrCorrupt
-		}
-
-		// Notify user that database is valid.
-		fmt.Fprintln(cmd.Stdout, "OK")
-		return nil
-	})
-}
-
-// Usage returns the help message.
-func (cmd *checkCommand) Usage() string {
-	return strings.TrimLeft(`
-usage: bolt check PATH
-
-Check opens a database at PATH and runs an exhaustive check to verify that
-all pages are accessible or are marked as freed. It also verifies that no
-pages are double referenced.
-
-Verification errors will stream out as they are found and the process will
-return after all pages have been checked.
 `, "\n")
 }
 
@@ -456,7 +382,7 @@ func (cmd *pageItemCommand) Run(args ...string) error {
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	fs.BoolVar(&options.keyOnly, "key-only", false, "Print only the key")
 	fs.BoolVar(&options.valueOnly, "value-only", false, "Print only the value")
-	fs.StringVar(&options.format, "format", "ascii-encoded", "Output format. One of: "+FORMAT_MODES)
+	fs.StringVar(&options.format, "format", "auto", "Output format. One of: "+FORMAT_MODES)
 	fs.BoolVar(&options.help, "h", false, "")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -466,7 +392,7 @@ func (cmd *pageItemCommand) Run(args ...string) error {
 	}
 
 	if options.keyOnly && options.valueOnly {
-		return fmt.Errorf("The --key-only or --value-only flag may be set, but not both.")
+		return errors.New("The --key-only or --value-only flag may be set, but not both.")
 	}
 
 	// Require database path and page id.
@@ -606,7 +532,7 @@ Additional options include:
 	--value-only
 		Print only the value
 	--format
-		Output format. One of: `+FORMAT_MODES+` (default=ascii-encoded)
+		Output format. One of: `+FORMAT_MODES+` (default=auto)
 
 page-item prints a page item key and value.
 `, "\n")
@@ -909,7 +835,7 @@ func newKeysCommand(m *Main) *keysCommand {
 func (cmd *keysCommand) Run(args ...string) error {
 	// Parse flags.
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
-	optionsFormat := fs.String("format", "bytes", "Output format. One of: "+FORMAT_MODES+" (default: bytes)")
+	optionsFormat := fs.String("format", "auto", "Output format. One of: "+FORMAT_MODES+" (default: auto)")
 	help := fs.Bool("h", false, "")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -920,6 +846,9 @@ func (cmd *keysCommand) Run(args ...string) error {
 
 	// Require database path and bucket.
 	relevantArgs := fs.Args()
+	if len(relevantArgs) < 2 {
+		return ErrNotEnoughArgs
+	}
 	path, buckets := relevantArgs[0], relevantArgs[1:]
 	if path == "" {
 		return ErrPathRequired
@@ -939,19 +868,13 @@ func (cmd *keysCommand) Run(args ...string) error {
 	// Print keys.
 	return db.View(func(tx *bolt.Tx) error {
 		// Find bucket.
-		var lastbucket *bolt.Bucket = tx.Bucket([]byte(buckets[0]))
-		if lastbucket == nil {
-			return berrors.ErrBucketNotFound
-		}
-		for _, bucket := range buckets[1:] {
-			lastbucket = lastbucket.Bucket([]byte(bucket))
-			if lastbucket == nil {
-				return berrors.ErrBucketNotFound
-			}
+		lastBucket, err := findLastBucket(tx, buckets)
+		if err != nil {
+			return err
 		}
 
 		// Iterate over each key.
-		return lastbucket.ForEach(func(key, _ []byte) error {
+		return lastBucket.ForEach(func(key, _ []byte) error {
 			return writelnBytes(cmd.Stdout, key, *optionsFormat)
 		})
 	})
@@ -969,7 +892,7 @@ Print a list of keys in the given (sub)bucket.
 Additional options include:
 
 	--format
-		Output format. One of: `+FORMAT_MODES+` (default=bytes)
+		Output format. One of: `+FORMAT_MODES+` (default=auto)
 
 Print a list of keys in the given bucket.
 `, "\n")
@@ -994,7 +917,7 @@ func (cmd *getCommand) Run(args ...string) error {
 	var parseFormat string
 	var format string
 	fs.StringVar(&parseFormat, "parse-format", "ascii-encoded", "Input format. One of: ascii-encoded|hex (default: ascii-encoded)")
-	fs.StringVar(&format, "format", "bytes", "Output format. One of: "+FORMAT_MODES+" (default: bytes)")
+	fs.StringVar(&format, "format", "auto", "Output format. One of: "+FORMAT_MODES+" (default: auto)")
 	help := fs.Bool("h", false, "")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1005,6 +928,9 @@ func (cmd *getCommand) Run(args ...string) error {
 
 	// Require database path, bucket and key.
 	relevantArgs := fs.Args()
+	if len(relevantArgs) < 3 {
+		return ErrNotEnoughArgs
+	}
 	path, buckets := relevantArgs[0], relevantArgs[1:len(relevantArgs)-1]
 	key, err := parseBytes(relevantArgs[len(relevantArgs)-1], parseFormat)
 	if err != nil {
@@ -1030,19 +956,13 @@ func (cmd *getCommand) Run(args ...string) error {
 	// Print value.
 	return db.View(func(tx *bolt.Tx) error {
 		// Find bucket.
-		var lastbucket *bolt.Bucket = tx.Bucket([]byte(buckets[0]))
-		if lastbucket == nil {
-			return berrors.ErrBucketNotFound
-		}
-		for _, bucket := range buckets[1:] {
-			lastbucket = lastbucket.Bucket([]byte(bucket))
-			if lastbucket == nil {
-				return berrors.ErrBucketNotFound
-			}
+		lastBucket, err := findLastBucket(tx, buckets)
+		if err != nil {
+			return err
 		}
 
 		// Find value for given key.
-		val := lastbucket.Get(key)
+		val := lastBucket.Get(key)
 		if val == nil {
 			return fmt.Errorf("Error %w for key: %q hex: \"%x\"", ErrKeyNotFound, key, string(key))
 		}
@@ -1062,7 +982,7 @@ Print the value of the given key in the given (sub)bucket.
 Additional options include:
 
 	--format
-		Output format. One of: `+FORMAT_MODES+` (default=bytes)
+		Output format. One of: `+FORMAT_MODES+` (default=auto)
 	--parse-format
 		Input format (of key). One of: ascii-encoded|hex (default=ascii-encoded)"
 `, "\n")
@@ -1105,17 +1025,27 @@ func (cmd *benchCommand) Run(args ...string) error {
 	db.NoSync = options.NoSync
 	defer db.Close()
 
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	// Write to the database.
 	var writeResults BenchResults
+
 	fmt.Fprintf(cmd.Stderr, "starting write benchmark.\n")
-	if err := cmd.runWrites(db, options, &writeResults); err != nil {
+	keys, err := cmd.runWrites(db, options, &writeResults, r)
+	if err != nil {
 		return fmt.Errorf("write: %v", err)
+	}
+
+	if keys != nil {
+		r.Shuffle(len(keys), func(i, j int) {
+			keys[i], keys[j] = keys[j], keys[i]
+		})
 	}
 
 	var readResults BenchResults
 	fmt.Fprintf(cmd.Stderr, "starting read benchmark.\n")
 	// Read from the database.
-	if err := cmd.runReads(db, options, &readResults); err != nil {
+	if err := cmd.runReads(db, options, &readResults, keys); err != nil {
 		return fmt.Errorf("bench: read: %s", err)
 	}
 
@@ -1174,7 +1104,7 @@ func (cmd *benchCommand) ParseFlags(args []string) (*BenchOptions, error) {
 }
 
 // Writes to the database.
-func (cmd *benchCommand) runWrites(db *bolt.DB, options *BenchOptions, results *BenchResults) error {
+func (cmd *benchCommand) runWrites(db *bolt.DB, options *BenchOptions, results *BenchResults, r *rand.Rand) ([]nestedKey, error) {
 	// Start profiling for writes.
 	if options.ProfileMode == "rw" || options.ProfileMode == "w" {
 		cmd.startProfiling(options)
@@ -1186,18 +1116,19 @@ func (cmd *benchCommand) runWrites(db *bolt.DB, options *BenchOptions, results *
 
 	t := time.Now()
 
+	var keys []nestedKey
 	var err error
 	switch options.WriteMode {
 	case "seq":
-		err = cmd.runWritesSequential(db, options, results)
+		keys, err = cmd.runWritesSequential(db, options, results)
 	case "rnd":
-		err = cmd.runWritesRandom(db, options, results)
+		keys, err = cmd.runWritesRandom(db, options, results, r)
 	case "seq-nest":
-		err = cmd.runWritesSequentialNested(db, options, results)
+		keys, err = cmd.runWritesSequentialNested(db, options, results)
 	case "rnd-nest":
-		err = cmd.runWritesRandomNested(db, options, results)
+		keys, err = cmd.runWritesRandomNested(db, options, results, r)
 	default:
-		return fmt.Errorf("invalid write mode: %s", options.WriteMode)
+		return nil, fmt.Errorf("invalid write mode: %s", options.WriteMode)
 	}
 
 	// Save time to write.
@@ -1208,30 +1139,33 @@ func (cmd *benchCommand) runWrites(db *bolt.DB, options *BenchOptions, results *
 		cmd.stopProfiling()
 	}
 
-	return err
+	return keys, err
 }
 
-func (cmd *benchCommand) runWritesSequential(db *bolt.DB, options *BenchOptions, results *BenchResults) error {
+func (cmd *benchCommand) runWritesSequential(db *bolt.DB, options *BenchOptions, results *BenchResults) ([]nestedKey, error) {
 	var i = uint32(0)
 	return cmd.runWritesWithSource(db, options, results, func() uint32 { i++; return i })
 }
 
-func (cmd *benchCommand) runWritesRandom(db *bolt.DB, options *BenchOptions, results *BenchResults) error {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+func (cmd *benchCommand) runWritesRandom(db *bolt.DB, options *BenchOptions, results *BenchResults, r *rand.Rand) ([]nestedKey, error) {
 	return cmd.runWritesWithSource(db, options, results, func() uint32 { return r.Uint32() })
 }
 
-func (cmd *benchCommand) runWritesSequentialNested(db *bolt.DB, options *BenchOptions, results *BenchResults) error {
+func (cmd *benchCommand) runWritesSequentialNested(db *bolt.DB, options *BenchOptions, results *BenchResults) ([]nestedKey, error) {
 	var i = uint32(0)
 	return cmd.runWritesNestedWithSource(db, options, results, func() uint32 { i++; return i })
 }
 
-func (cmd *benchCommand) runWritesRandomNested(db *bolt.DB, options *BenchOptions, results *BenchResults) error {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+func (cmd *benchCommand) runWritesRandomNested(db *bolt.DB, options *BenchOptions, results *BenchResults, r *rand.Rand) ([]nestedKey, error) {
 	return cmd.runWritesNestedWithSource(db, options, results, func() uint32 { return r.Uint32() })
 }
 
-func (cmd *benchCommand) runWritesWithSource(db *bolt.DB, options *BenchOptions, results *BenchResults, keySource func() uint32) error {
+func (cmd *benchCommand) runWritesWithSource(db *bolt.DB, options *BenchOptions, results *BenchResults, keySource func() uint32) ([]nestedKey, error) {
+	var keys []nestedKey
+	if options.ReadMode == "rnd" {
+		keys = make([]nestedKey, 0, options.Iterations)
+	}
+
 	for i := int64(0); i < options.Iterations; i += options.BatchSize {
 		if err := db.Update(func(tx *bolt.Tx) error {
 			b, _ := tx.CreateBucketIfNotExists(benchBucketName)
@@ -1249,20 +1183,27 @@ func (cmd *benchCommand) runWritesWithSource(db *bolt.DB, options *BenchOptions,
 				if err := b.Put(key, value); err != nil {
 					return err
 				}
-
+				if keys != nil {
+					keys = append(keys, nestedKey{nil, key})
+				}
 				results.AddCompletedOps(1)
 			}
 			fmt.Fprintf(cmd.Stderr, "Finished write iteration %d\n", i)
 
 			return nil
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return keys, nil
 }
 
-func (cmd *benchCommand) runWritesNestedWithSource(db *bolt.DB, options *BenchOptions, results *BenchResults, keySource func() uint32) error {
+func (cmd *benchCommand) runWritesNestedWithSource(db *bolt.DB, options *BenchOptions, results *BenchResults, keySource func() uint32) ([]nestedKey, error) {
+	var keys []nestedKey
+	if options.ReadMode == "rnd" {
+		keys = make([]nestedKey, 0, options.Iterations)
+	}
+
 	for i := int64(0); i < options.Iterations; i += options.BatchSize {
 		if err := db.Update(func(tx *bolt.Tx) error {
 			top, err := tx.CreateBucketIfNotExists(benchBucketName)
@@ -1294,21 +1235,23 @@ func (cmd *benchCommand) runWritesNestedWithSource(db *bolt.DB, options *BenchOp
 				if err := b.Put(key, value); err != nil {
 					return err
 				}
-
+				if keys != nil {
+					keys = append(keys, nestedKey{name, key})
+				}
 				results.AddCompletedOps(1)
 			}
 			fmt.Fprintf(cmd.Stderr, "Finished write iteration %d\n", i)
 
 			return nil
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return keys, nil
 }
 
 // Reads from the database.
-func (cmd *benchCommand) runReads(db *bolt.DB, options *BenchOptions, results *BenchResults) error {
+func (cmd *benchCommand) runReads(db *bolt.DB, options *BenchOptions, results *BenchResults, keys []nestedKey) error {
 	// Start profiling for reads.
 	if options.ProfileMode == "r" {
 		cmd.startProfiling(options)
@@ -1329,6 +1272,13 @@ func (cmd *benchCommand) runReads(db *bolt.DB, options *BenchOptions, results *B
 		default:
 			err = cmd.runReadsSequential(db, options, results)
 		}
+	case "rnd":
+		switch options.WriteMode {
+		case "seq-nest", "rnd-nest":
+			err = cmd.runReadsRandomNested(db, options, keys, results)
+		default:
+			err = cmd.runReadsRandom(db, options, keys, results)
+		}
 	default:
 		return fmt.Errorf("invalid read mode: %s", options.ReadMode)
 	}
@@ -1344,19 +1294,69 @@ func (cmd *benchCommand) runReads(db *bolt.DB, options *BenchOptions, results *B
 	return err
 }
 
+type nestedKey struct{ bucket, key []byte }
+
 func (cmd *benchCommand) runReadsSequential(db *bolt.DB, options *BenchOptions, results *BenchResults) error {
 	return db.View(func(tx *bolt.Tx) error {
 		t := time.Now()
 
 		for {
 			numReads := int64(0)
-			c := tx.Bucket(benchBucketName).Cursor()
-			for k, v := c.First(); k != nil; k, v = c.Next() {
-				numReads++
-				results.AddCompletedOps(1)
-				if v == nil {
-					return errors.New("invalid value")
+			err := func() error {
+				defer func() { results.AddCompletedOps(numReads) }()
+
+				c := tx.Bucket(benchBucketName).Cursor()
+				for k, v := c.First(); k != nil; k, v = c.Next() {
+					numReads++
+					if v == nil {
+						return ErrInvalidValue
+					}
 				}
+
+				return nil
+			}()
+
+			if err != nil {
+				return err
+			}
+
+			if options.WriteMode == "seq" && numReads != options.Iterations {
+				return fmt.Errorf("read seq: iter mismatch: expected %d, got %d", options.Iterations, numReads)
+			}
+
+			// Make sure we do this for at least a second.
+			if time.Since(t) >= time.Second {
+				break
+			}
+		}
+
+		return nil
+	})
+}
+
+func (cmd *benchCommand) runReadsRandom(db *bolt.DB, options *BenchOptions, keys []nestedKey, results *BenchResults) error {
+	return db.View(func(tx *bolt.Tx) error {
+		t := time.Now()
+
+		for {
+			numReads := int64(0)
+			err := func() error {
+				defer func() { results.AddCompletedOps(numReads) }()
+
+				b := tx.Bucket(benchBucketName)
+				for _, key := range keys {
+					v := b.Get(key.key)
+					numReads++
+					if v == nil {
+						return ErrInvalidValue
+					}
+				}
+
+				return nil
+			}()
+
+			if err != nil {
+				return err
 			}
 
 			if options.WriteMode == "seq" && numReads != options.Iterations {
@@ -1381,11 +1381,11 @@ func (cmd *benchCommand) runReadsSequentialNested(db *bolt.DB, options *BenchOpt
 			numReads := int64(0)
 			var top = tx.Bucket(benchBucketName)
 			if err := top.ForEach(func(name, _ []byte) error {
+				defer func() { results.AddCompletedOps(numReads) }()
 				if b := top.Bucket(name); b != nil {
 					c := b.Cursor()
 					for k, v := c.First(); k != nil; k, v = c.Next() {
 						numReads++
-						results.AddCompletedOps(1)
 						if v == nil {
 							return ErrInvalidValue
 						}
@@ -1393,6 +1393,47 @@ func (cmd *benchCommand) runReadsSequentialNested(db *bolt.DB, options *BenchOpt
 				}
 				return nil
 			}); err != nil {
+				return err
+			}
+
+			if options.WriteMode == "seq-nest" && numReads != options.Iterations {
+				return fmt.Errorf("read seq-nest: iter mismatch: expected %d, got %d", options.Iterations, numReads)
+			}
+
+			// Make sure we do this for at least a second.
+			if time.Since(t) >= time.Second {
+				break
+			}
+		}
+
+		return nil
+	})
+}
+
+func (cmd *benchCommand) runReadsRandomNested(db *bolt.DB, options *BenchOptions, nestedKeys []nestedKey, results *BenchResults) error {
+	return db.View(func(tx *bolt.Tx) error {
+		t := time.Now()
+
+		for {
+			numReads := int64(0)
+			err := func() error {
+				defer func() { results.AddCompletedOps(numReads) }()
+
+				var top = tx.Bucket(benchBucketName)
+				for _, nestedKey := range nestedKeys {
+					if b := top.Bucket(nestedKey.bucket); b != nil {
+						v := b.Get(nestedKey.key)
+						numReads++
+						if v == nil {
+							return ErrInvalidValue
+						}
+					}
+				}
+
+				return nil
+			}()
+
+			if err != nil {
 				return err
 			}
 
@@ -1634,7 +1675,7 @@ func (cmd *compactCommand) Run(args ...string) (err error) {
 	} else if err != nil {
 		return err
 	} else if cmd.DstPath == "" {
-		return fmt.Errorf("output file required")
+		return errors.New("output file required")
 	}
 
 	// Require database paths.
@@ -1717,4 +1758,18 @@ func (_ cmdKvStringer) ValueToString(value []byte) string {
 
 func CmdKvStringer() bolt.KVStringer {
 	return cmdKvStringer{}
+}
+
+func findLastBucket(tx *bolt.Tx, bucketNames []string) (*bolt.Bucket, error) {
+	var lastbucket *bolt.Bucket = tx.Bucket([]byte(bucketNames[0]))
+	if lastbucket == nil {
+		return nil, berrors.ErrBucketNotFound
+	}
+	for _, bucket := range bucketNames[1:] {
+		lastbucket = lastbucket.Bucket([]byte(bucket))
+		if lastbucket == nil {
+			return nil, berrors.ErrBucketNotFound
+		}
+	}
+	return lastbucket, nil
 }
